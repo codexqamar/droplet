@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>DROPLET — Demo overview and how it works</title>
+<style>
+  @page { size: A4; margin: 16mm 15mm 18mm; }
+  :root { --ink:#0e1e36; --muted:#52627c; --line:#dbe3ee; --accent:#007aff; --soft:#eef5ff; --ok:#12946a; --warn:#d07c0e; --danger:#d43048; }
+  * { box-sizing: border-box; }
+  html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  body { margin:0; font-family: "Segoe UI", "Inter", system-ui, sans-serif; color:var(--ink); font-size:9.9pt; line-height:1.45; }
+  h1,h2,h3 { line-height:1.2; margin:0; letter-spacing:-0.01em; }
+  h2 { font-size:16pt; margin: 0 0 3mm; }
+  h3 { font-size:11pt; margin: 3.5mm 0 1.2mm; }
+  p { margin: 0 0 2.5mm; }
+  ul, ol { margin: 0 0 3mm; padding-left: 5mm; }
+  li { margin: 0 0 1mm; }
+  .muted { color: var(--muted); }
+  .section { break-before: page; }
+  .avoid { break-inside: avoid; }
+  code, .mono { font-family: "Cascadia Mono", Consolas, monospace; font-size: 9pt; background: var(--soft); padding: 0 1.2mm; border-radius: 1mm; }
+  pre { font-family: "Cascadia Mono", Consolas, monospace; font-size: 8.6pt; background: #0e1e36; color: #e6efff; padding: 3mm 4mm; border-radius: 2.5mm; white-space: pre-wrap; margin: 0 0 3mm; }
+
+  /* cover */
+  .cover { height: 263mm; display:flex; flex-direction:column; justify-content:space-between; padding: 8mm 4mm 0; background: radial-gradient(120mm 90mm at 0% 0%, #dff0ff 0%, transparent 70%), radial-gradient(130mm 110mm at 100% 100%, #e8f1ff 0%, transparent 70%); border-radius: 6mm; }
+  .brand { display:flex; align-items:center; gap:4mm; }
+  .brand img { width: 16mm; height: 16mm; }
+  .brand .name { font-weight:800; font-size: 18pt; letter-spacing: 0.16em; }
+  .brand .sub { font-size: 8pt; letter-spacing: 0.24em; color: var(--muted); text-transform: uppercase; }
+  .cover h1 { font-size: 34pt; font-weight: 700; max-width: 150mm; }
+  .cover h1 span { color: var(--accent); }
+  .cover .lede { font-size: 13pt; color: var(--muted); max-width: 150mm; margin-top: 5mm; }
+  .cover .meta { display:flex; gap: 8mm; font-size: 9pt; color: var(--muted); border-top: 1px solid var(--line); padding: 4mm 0 6mm; }
+
+  /* cards and grids */
+  .grid3 { display:grid; grid-template-columns: repeat(3, 1fr); gap: 4mm; margin: 2mm 0 4mm; }
+  .grid2 { display:grid; grid-template-columns: repeat(2, 1fr); gap: 4mm; margin: 2mm 0 4mm; }
+  .card { border: 1px solid var(--line); border-radius: 3.5mm; padding: 3mm 3.5mm; background: #fbfdff; break-inside: avoid; }
+  .card h4 { margin: 0 0 1.5mm; font-size: 10.5pt; }
+  .card p, .card li { font-size: 9.1pt; }
+  .tag { display:inline-block; font-size: 7.5pt; font-weight:600; padding: 0.4mm 2mm; border-radius: 10mm; background: var(--soft); color: var(--accent); margin-bottom: 2mm; }
+
+  table { width:100%; border-collapse: collapse; margin: 1mm 0 4mm; font-size: 9.3pt; }
+  th, td { text-align:left; padding: 2mm 2.5mm; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: 8pt; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); font-weight:600; }
+
+  /* step list */
+  .steps { counter-reset: s; list-style:none; padding:0; }
+  .steps > li { counter-increment: s; position: relative; padding: 0 0 2.2mm 10mm; break-inside: avoid; }
+  .steps > li::before { content: counter(s); position:absolute; left:0; top: 0; width: 7mm; height: 7mm; border-radius: 2mm; background: var(--accent); color: white; font-weight: 700; font-size: 9pt; display:grid; place-items:center; }
+  .steps b { display:block; }
+
+  /* flow diagram */
+  .flow { display:flex; align-items:stretch; gap: 2mm; margin: 2mm 0 4mm; }
+  .flow .box { flex:1; border:1px solid var(--line); border-radius: 3mm; padding: 3mm; text-align:center; font-size: 9pt; background:#fbfdff; }
+  .flow .box b { display:block; font-size: 9.5pt; margin-bottom: 1mm; }
+  .flow .arrow { align-self:center; color: var(--accent); font-weight:700; }
+  .state { display:flex; flex-wrap: wrap; gap: 1.5mm; align-items:center; margin: 2mm 0 4mm; font-size: 8.8pt; }
+  .state span.s { border: 1px solid var(--line); border-radius: 10mm; padding: 1mm 3mm; background: #fbfdff; }
+  .state span.s.bad { border-color: #f3c3cb; background:#fff4f6; color: var(--danger); }
+  .state span.s.good { border-color: #bfe8d8; background:#f2fbf7; color: var(--ok); }
+
+  .arch { border:1px solid var(--line); border-radius: 4mm; padding: 3mm; display:grid; grid-template-columns: 1fr 9mm 1fr 9mm 1fr; gap: 0; align-items:center; margin: 2mm 0 4mm; break-inside: avoid; }
+  .arch .col { display:flex; flex-direction:column; gap: 2mm; }
+  .arch .node { border: 1px solid var(--line); border-radius: 3mm; padding: 2.5mm 3mm; font-size: 8.8pt; background: white; }
+  .arch .node b { display:block; font-size: 9.5pt; }
+  .arch .node.accent { border-color: #b8d6ff; background: var(--soft); }
+  .arch .link { text-align:center; color: var(--accent); font-weight: 700; font-size: 12pt; }
+
+  .callout { border-left: 3px solid var(--accent); background: var(--soft); padding: 3mm 4mm; border-radius: 0 3mm 3mm 0; margin: 2mm 0 4mm; font-size: 9.5pt; break-inside: avoid; }
+  .callout.warn { border-color: var(--warn); background: #fff8ec; }
+  .foot { font-size: 8pt; color: var(--muted); margin-top: 6mm; border-top: 1px solid var(--line); padding-top: 2mm; }
+</style>
+</head>
+<body>
+
+<!-- ───────────── cover ───────────── -->
+<div class="cover">
+  <div class="brand">
+    <img alt="" src="data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1024 1024'%3E%3Crect x='64' y='64' width='896' height='896' rx='216' fill='%23007aff'/%3E%3Cpath d='M512 196c104 138 214 248 214 372a214 214 0 0 1-428 0c0-124 110-234 214-372Z' fill='%23f7fbff'/%3E%3Cpath d='M420 600a96 96 0 0 0 90 86' stroke='%23007aff' stroke-width='40' fill='none' stroke-linecap='round'/%3E%3C/svg%3E">
+    <div><div class="name">DROPLET</div><div class="sub">B2B Trade Portal</div></div>
+  </div>
+  <div>
+    <h1>Trade ordering at <span>your customer's contract price</span>, on the web and the desktop.</h1>
+    <p class="lede">Demo overview and how it works: the three apps, who uses what, a step-by-step demo script, the pricing, credit, sync and security model, and how a new business is set up and deployed.</p>
+  </div>
+  <div class="meta"><span>Version 0.3</span><span>Web portal · Admin portal · Windows desktop app</span><span>October 2026</span></div>
+</div>
+
+<!-- ───────────── what it is ───────────── -->
+<div class="section">
+  <h2>What DROPLET is</h2>
+  <p>DROPLET is a private ordering portal that a supplier (a wholesaler or distributor) runs for its approved trade customers. Customers see only their own negotiated prices, order by SKU in seconds, request quotes, reorder, and check their statement and credit. The supplier's staff approve customers, manage pricing and credit, and work every order and quote from an admin portal. A signed Windows desktop app gives trade counters an offline catalogue and instant SKU entry, protected by tamper detection.</p>
+
+  <div class="grid3">
+    <div class="card"><span class="tag">Customers</span><h4>Trade portal (web)</h4><ul><li>Contract prices and quantity breaks</li><li>Quick order by SKU, paste lists, reorder</li><li>Quotes: request, then accept the offer</li><li>Credit, aged balance and statement</li><li>Get the signed desktop installer</li></ul></div>
+    <div class="card"><span class="tag">Supplier staff</span><h4>Admin portal</h4><ul><li>Approve, reject, suspend applications</li><li>Credit limits, terms, tiers, contract prices</li><li>Approve, confirm, ship, invoice orders</li><li>Price quotes; order for a customer</li><li>Team, security, audit, live notifications</li></ul></div>
+    <div class="card"><span class="tag">Trade counters</span><h4>Desktop app (Windows)</h4><ul><li>Same screens as the portal</li><li>Local catalogue and prices: instant, offline</li><li>Orders queue offline, send on sync</li><li>Several trade accounts per computer</li><li>App lock: password + authenticator</li></ul></div>
+  </div>
+
+  <h3>Who uses what</h3>
+  <table>
+    <tr><th style="width:24%">Role</th><th style="width:30%">Where</th><th>What they can do</th></tr>
+    <tr><td><b>Operator</b> (you, DROPLET)</td><td>Server / command line</td><td>Deploy an install per business, generate its one-time setup link, publish desktop releases.</td></tr>
+    <tr><td><b>Administrator</b></td><td>Admin portal (web or desktop)</td><td>Everything: accounts, pricing, catalogue, orders, quotes, statements, team, security, settings.</td></tr>
+    <tr><td><b>Account manager</b></td><td>Admin portal (web or desktop)</td><td>Only the trade accounts assigned to them: their orders, quotes and ordering on their behalf.</td></tr>
+    <tr><td><b>Trade buyer</b></td><td>Trade portal and desktop app</td><td>Order, quote, reorder and view statements for their own account.</td></tr>
+  </table>
+
+  <div class="callout">Every staff and customer account that can install the desktop app or touch admin functions must turn on <b>two-step verification</b> (authenticator app). It is what allows recovery after a security lock and what protects the desktop app lock.</div>
+</div>
+
+<!-- ───────────── demo script ───────────── -->
+<div class="section">
+  <h2>Demo script (about 20 minutes)</h2>
+  <p class="muted">Run it on a fresh install. Have an authenticator app on your phone. Two browser windows help: one normal (admin), one private (customer).</p>
+  <ol class="steps">
+    <li><b>Create the business's first administrator.</b> Open the one-time setup link (printed in the server log on first start, or <code>npm run setup-link</code>). Enter the business name, your name, email and password. Sign in and scan the QR code: the admin portal opens.</li>
+    <li><b>Build a small catalogue.</b> Admin → <i>Catalogue</i> → <i>Add product</i> (SKU, name, unit, list price, stock). Add a tier such as “Gold” and give one product quantity breaks for it.</li>
+    <li><b>A customer applies.</b> In the private window open the portal → <i>Apply for an account</i>. Signing in now shows “Your account is under review”. In the admin window the bell lights up with a pop-up: <i>New account application</i>.</li>
+    <li><b>Approve with terms.</b> Admin → <i>Trade accounts</i> → the application → choose the Gold tier, a credit limit, payment terms and an account manager → <i>Approve account</i>. Optionally add a contract price for one SKU on <i>Contract prices</i>.</li>
+    <li><b>The customer orders.</b> Customer signs in (the dashboard asks them to turn on two-step verification). <i>Quick order</i>: type a SKU, Enter, quantity, Enter. Prices shown are their own (contract → tier → list). Place an order larger than the limit to see it go for approval.</li>
+    <li><b>Work the order.</b> Admin gets a <i>Order needs approval</i> notification → <i>Orders</i> → Approve → Confirm → Mark shipped → Invoice. Invoicing posts the amount to the customer's statement; their credit gauge and aged balance update.</li>
+    <li><b>Quote round-trip.</b> Customer: <i>Request quote</i>. Admin: <i>Quotes</i> → price each line, set validity → <i>Send offer</i>. Customer: <i>Quotes</i> → <i>Accept</i> → it becomes an order at the offered prices.</li>
+    <li><b>Order for the customer.</b> Admin → the account → <i>New order</i>: the same quick-order grid with the customer's prices and credit check; the customer is emailed.</li>
+    <li><b>Desktop app.</b> Customer → <i>Desktop app</i> → <i>Get signed installer</i> (single-use link + enrollment code). Install, paste the code, name the computer: catalogue and orders sync. Disconnect the network: ordering still works and queues. Use the padlock to lock; unlocking needs the password and then the authenticator code.</li>
+    <li><b>Staff on desktop.</b> On the desktop app's title bar, the shield opens the admin portal: staff sign in with email, password and code. Notifications are checked every 15 seconds.</li>
+    <li><b>Security story (optional).</b> Modify a file inside the installed app's <code>daemon</code> folder and relaunch: the app refuses to start, the account locks, the owner is emailed a recovery link. Recovery = link + password + code → clean installer → account unlocks after the clean install checks in.</li>
+  </ol>
+</div>
+
+<!-- ───────────── how it works ───────────── -->
+<div class="section">
+  <h2>How it works</h2>
+  <div class="arch">
+    <div class="col">
+      <div class="node"><b>Web browser</b>Trade portal · Admin portal</div>
+      <div class="node"><b>Desktop app</b>Signed shell (Rust/Tauri) + local engine (Python, SQLite)</div>
+    </div>
+    <div class="link">⇄</div>
+    <div class="col">
+      <div class="node accent"><b>DROPLET server</b>One container: web portal + API (Node, Fastify)</div>
+      <div class="node"><b>Live notifications</b>Server-sent events from the audit log</div>
+    </div>
+    <div class="link">⇄</div>
+    <div class="col">
+      <div class="node"><b>PostgreSQL</b>Accounts, prices, orders, quotes, ledger, devices, audit</div>
+      <div class="node"><b>Release storage</b>Signed desktop installers</div>
+    </div>
+  </div>
+
+  <div class="grid2">
+    <div class="card"><h4>Pricing</h4><p>For every line the server resolves the best price for the quantity: the customer's <b>contract price</b>, else their <b>tier price</b>, else the <b>list price</b>. Prices shown in browsers or the desktop are only a preview; the server always recalculates on submit, so a client can never order below its contract price.</p></div>
+    <div class="card"><h4>Credit</h4><p>Balance = sum of the statement (invoices minus payments and credit notes). If balance + order total exceeds the credit limit, the order is held as <i>Awaiting approval</i> for staff. With no limit set, every order is held. Invoicing an order adds it to the statement with the customer's payment terms.</p></div>
+    <div class="card"><h4>Desktop sync</h4><p>Sync is explicit (at launch and on the sync button), never continuous. Each sync first proves the install is genuine, then pulls catalogue and price changes since the last sync, pushes queued orders (safe to retry, never duplicated) and refreshes the account summary for offline viewing.</p></div>
+    <div class="card"><h4>Accounts on a computer</h4><p>Several trade accounts can live on one computer, each with its own key and cache. At every launch the app checks each one with the server: accounts removed, rejected or revoked on the portal disappear from the desktop automatically.</p></div>
+  </div>
+
+  <h3>Desktop integrity and tamper response</h3>
+  <p>Every release is hashed file by file and the list is signed with the release key. At launch, and every 15 minutes, the shell re-checks every file, including files that should not be there. A mismatch stops the app before the engine runs, and the shell sends a signed report to the server.</p>
+  <div class="state">
+    <span class="s good">Active</span> → <span class="s bad">Locked (tamper)</span> → <span class="s">Recovery email sent</span> → <span class="s">Identity verified (link + password + code)</span> → <span class="s">Clean build issued</span> → <span class="s good">Active again after clean install checks in</span>
+  </div>
+  <p class="muted">While locked, every session is signed out and web, desktop and sync access stop. Administrators can lift a lock that was a confirmed false alarm; the action is audited.</p>
+
+  <h3>Sign-in, sessions and locks</h3>
+  <ul>
+    <li><b>Web:</b> password, then authenticator code; sessions are secure cookies (12 hours), stored only as hashes.</li>
+    <li><b>Desktop (buyers):</b> the computer is linked once with a code from the portal; it then authenticates with its own key, kept encrypted by Windows. The app lock needs the account's password and authenticator code, checked by the server, and survives restarts.</li>
+    <li><b>Desktop (staff):</b> live sign-in to the admin portal; the session lives only in the app's memory.</li>
+    <li><b>Audit:</b> sign-ins, approvals, price changes, orders, unlocks and every security event are recorded.</li>
+  </ul>
+</div>
+
+<!-- ───────────── onboarding & deploy ───────────── -->
+<div class="section">
+  <h2>Setting up a business that buys DROPLET</h2>
+  <p>Each business gets its <b>own install</b>: its own server, database, admin portal and customers. Nothing is shared between businesses.</p>
+  <div class="flow avoid">
+    <div class="box"><b>1. Deploy</b>New install on Coolify (Docker). Starts with no administrator.</div><div class="arrow">→</div>
+    <div class="box"><b>2. Setup link</b>Printed in the logs on first start, or <span class="mono">setup-link</span>. One use, 72 h.</div><div class="arrow">→</div>
+    <div class="box"><b>3. First admin</b>Business opens the link, creates their administrator, turns on 2-step.</div><div class="arrow">→</div>
+    <div class="box"><b>4. Onboard</b>Invite staff (Team). Approve or open customer accounts.</div>
+  </div>
+
+  <h3>Deploying with GitHub, Coolify and Docker</h3>
+  <ol>
+    <li>Push the repository to GitHub.</li>
+    <li>In Coolify: <i>New resource → GitHub repository</i>, build pack <b>Docker Compose</b> using <code>docker-compose.yml</code> (portal + PostgreSQL), or <b>Dockerfile</b> with a Coolify-managed PostgreSQL.</li>
+    <li>Set the environment variables (generator command in <code>.env.production.example</code>): <code>PORTAL_ORIGIN</code>, <code>POSTGRES_PASSWORD</code> (or <code>DATABASE_URL</code>), <code>DROPLET_SIGNING_SECRET</code>, <code>DROPLET_MFA_ENC_KEY</code>, optionally <code>DROPLET_OPS_TOKEN</code>.</li>
+    <li>Give the <code>droplet</code> service your domain on port <b>8080</b>; Coolify issues the HTTPS certificate.</li>
+    <li>Deploy. Migrations run automatically. Open the logs for the one-time admin setup link.</li>
+  </ol>
+  <h3>Publishing the desktop app to a deployed install</h3>
+<pre>npm --prefix apps/desktop run build -- -Api https://portal.example.com `
+  -RegisterUrl https://portal.example.com -OpsToken &lt;DROPLET_OPS_TOKEN&gt;</pre>
+  <p>The Windows build signs the release, points the app at your domain and uploads the installer to the server, where customers download it from their portal.</p>
+
+  <div class="callout warn"><b>Before going live:</b> sign the installer with a code-signing certificate (otherwise Windows SmartScreen warns), keep the release signing key off the build machine (HSM/KMS), connect an email service (emails currently print to the server log), and back up <code>DROPLET_MFA_ENC_KEY</code> (losing it means everyone re-enrolls their authenticator).</div>
+
+  <div class="foot">DROPLET · Demo overview and how it works · Generated from the project documentation (README, docs/ARCHITECTURE.md, docs/ONBOARDING.md).</div>
+</div>
+
+</body>
+</html>

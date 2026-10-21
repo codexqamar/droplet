@@ -1,0 +1,15 @@
+{
+  "name": "@droplet/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "icons": "node scripts/make-icons.mjs && tauri icon assets/icon-1024.png -o src-tauri/icons",
+    "build": "powershell -ExecutionPolicy Bypass -File scripts/build.ps1",
+    "tauri": "tauri"
+  },
+  "devDependencies": {
+    "@resvg/resvg-js": "2.6.2",
+    "@tauri-apps/cli": "2.12.3"
+  }
+}

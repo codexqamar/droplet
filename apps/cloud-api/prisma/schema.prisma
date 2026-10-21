@@ -1,0 +1,523 @@
+// DROPLET central cloud database.
+// PostgreSQL 15+. Money is stored as integer minor units (cents) to avoid float drift.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ───────────────────────────── Identity & access ─────────────────────────────
+
+enum Role {
+  TRADE_CUSTOMER
+  SALES_REP
+  ADMIN
+}
+
+/// Account-level security posture. Driven exclusively by src/security/stateMachine.ts.
+enum SecurityState {
+  ACTIVE
+  LOCKED_TAMPER          // tripwire fired, all sessions/tokens revoked
+  RECOVERY_PENDING       // recovery email sent, waiting for token redemption
+  RECOVERY_VERIFIED      // token + MFA ok, compromised device revoked, awaiting clean build
+  AWAITING_CLEAN_INSTALL // clean signed build issued, waiting for a passing attestation
+}
+
+model User {
+  id             String       @id @default(uuid()) @db.Uuid
+  email          String       @unique
+  passwordHash   String
+  fullName       String
+  role           Role
+  tradeAccountId String?      @db.Uuid // set for TRADE_CUSTOMER only
+  tradeAccount   TradeAccount? @relation("AccountUsers", fields: [tradeAccountId], references: [id])
+  isAccountOwner Boolean      @default(false) // receives security alerts for the trade account
+  active         Boolean      @default(true)  // deactivated users cannot sign in
+  lastLoginAt    DateTime?
+  notificationsSeenAt DateTime? // admin portal: events after this are unread
+  mfaFactors     MfaFactor[]
+  sessions       WebSession[]
+  devices        Device[]
+  repAssignments RepAssignment[]
+  ordersPlaced   Order[]      @relation("OrderPlacedBy")
+  ordersApproved Order[]      @relation("OrderApprovedBy")
+  quotesRequested Quote[]     @relation("QuoteRequestedBy")
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@index([tradeAccountId])
+}
+
+enum MfaKind {
+  TOTP
+  WEBAUTHN
+}
+
+model MfaFactor {
+  id         String    @id @default(uuid()) @db.Uuid
+  userId     String    @db.Uuid
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  kind       MfaKind
+  secretEnc  Bytes     // encrypted with KMS data key; never stored in plaintext
+  label      String
+  confirmedAt DateTime? // null until the user proves they can generate a code
+  lastUsedAt DateTime?
+  createdAt  DateTime  @default(now())
+}
+
+model WebSession {
+  id         String    @id @default(uuid()) @db.Uuid
+  userId     String    @db.Uuid
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash  String    @unique // sha256 of opaque session token
+  mfaAt      DateTime?
+  ip         String?
+  userAgent  String?
+  expiresAt  DateTime
+  revokedAt  DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([userId, revokedAt])
+}
+
+/// Sales reps manage a set of trade accounts.
+model RepAssignment {
+  repId          String       @db.Uuid
+  rep            User         @relation(fields: [repId], references: [id], onDelete: Cascade)
+  tradeAccountId String       @db.Uuid
+  tradeAccount   TradeAccount @relation(fields: [tradeAccountId], references: [id], onDelete: Cascade)
+  canApprove     Boolean      @default(true)
+  assignedAt     DateTime     @default(now())
+
+  @@id([repId, tradeAccountId])
+}
+
+// ───────────────────────────── Trade accounts ─────────────────────────────
+
+enum AccountStatus {
+  PENDING_APPROVAL
+  APPROVED
+  REJECTED
+  SUSPENDED
+}
+
+model TradeAccount {
+  id               String          @id @default(uuid()) @db.Uuid
+  code             String          @unique // e.g. "ACC-10442"
+  legalName        String
+  phone            String?
+  status           AccountStatus   @default(PENDING_APPROVAL)
+  statusReason     String?         // why it was rejected or suspended (shown to the applicant)
+  securityState    SecurityState   @default(ACTIVE)
+  securityStateAt  DateTime        @default(now())
+  priceTierId      String?         @db.Uuid
+  priceTier        PriceTier?      @relation(fields: [priceTierId], references: [id])
+  catalogueId      String?         @db.Uuid
+  catalogue        Catalogue?      @relation(fields: [catalogueId], references: [id])
+  creditLimitMinor BigInt          @default(0)
+  paymentTermsDays Int             @default(30)
+  currency         String          @default("GBP") @db.Char(3)
+  users            User[]          @relation("AccountUsers")
+  reps             RepAssignment[]
+  prices           AccountPrice[]
+  orders           Order[]
+  quotes           Quote[]
+  ledger           LedgerEntry[]
+  incidents        SecurityIncident[]
+  approvedAt       DateTime?
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+}
+
+// ───────────────────────────── Catalogue & pricing ─────────────────────────────
+
+model Catalogue {
+  id        String             @id @default(uuid()) @db.Uuid
+  name      String
+  items     CatalogueProduct[]
+  accounts  TradeAccount[]
+  version   Int                @default(1) // bumped on every change; drives desktop sync
+  updatedAt DateTime           @updatedAt
+}
+
+model Product {
+  id          String             @id @default(uuid()) @db.Uuid
+  sku         String             @unique
+  name        String
+  description String?
+  uom         String             @default("EA") // unit of measure
+  packSize    Int                @default(1)
+  listMinor   BigInt             // list price, minor units
+  stockQty    Int                @default(0)
+  active      Boolean            @default(true)
+  catalogues  CatalogueProduct[]
+  tierPrices  TierPrice[]
+  accountPrices AccountPrice[]
+  orderLines  OrderLine[]
+  quoteLines  QuoteLine[]
+  // Global monotonic sequence for delta sync. Any write that changes what a buyer sees for this
+  // product (name, stock, list, tier or account prices) must bump it via nextSyncVersion().
+  syncVersion BigInt             @default(0)
+  updatedAt   DateTime           @updatedAt
+
+  @@index([syncVersion])
+}
+
+model CatalogueProduct {
+  catalogueId String    @db.Uuid
+  catalogue   Catalogue @relation(fields: [catalogueId], references: [id], onDelete: Cascade)
+  productId   String    @db.Uuid
+  product     Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+  sortOrder   Int       @default(0)
+
+  @@id([catalogueId, productId])
+}
+
+model PriceTier {
+  id       String         @id @default(uuid()) @db.Uuid
+  name     String         @unique // "Gold", "Distributor A"
+  accounts TradeAccount[]
+  prices   TierPrice[]
+}
+
+/// Tier-level price breaks. Resolution order: AccountPrice > TierPrice > Product.listMinor.
+model TierPrice {
+  tierId     String    @db.Uuid
+  tier       PriceTier @relation(fields: [tierId], references: [id], onDelete: Cascade)
+  productId  String    @db.Uuid
+  product    Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+  minQty     Int       @default(1)
+  unitMinor  BigInt
+
+  @@id([tierId, productId, minQty])
+}
+
+/// Negotiated (contract) price matrix: account × product × quantity break × validity window.
+model AccountPrice {
+  id             String       @id @default(uuid()) @db.Uuid
+  tradeAccountId String       @db.Uuid
+  tradeAccount   TradeAccount @relation(fields: [tradeAccountId], references: [id], onDelete: Cascade)
+  productId      String       @db.Uuid
+  product        Product      @relation(fields: [productId], references: [id], onDelete: Cascade)
+  minQty         Int          @default(1)
+  unitMinor      BigInt
+  validFrom      DateTime     @default(now())
+  validTo        DateTime?
+  contractRef    String?
+  syncVersion    BigInt       @default(0)
+  createdById    String       @db.Uuid
+  createdAt      DateTime     @default(now())
+
+  @@unique([tradeAccountId, productId, minQty, validFrom])
+  @@index([tradeAccountId, syncVersion])
+}
+
+// ───────────────────────────── Orders, quotes, statements ─────────────────────────────
+
+enum OrderStatus {
+  DRAFT
+  PENDING_APPROVAL
+  SUBMITTED
+  CONFIRMED
+  PART_SHIPPED
+  SHIPPED
+  INVOICED
+  CANCELLED
+}
+
+enum OrderChannel {
+  WEB
+  DESKTOP
+  REP
+}
+
+model Order {
+  id             String       @id @default(uuid()) @db.Uuid
+  number         String       @unique
+  clientRef      String?      // desktop-generated UUID; idempotency key for sync pushes
+  tradeAccountId String       @db.Uuid
+  tradeAccount   TradeAccount @relation(fields: [tradeAccountId], references: [id])
+  status         OrderStatus  @default(DRAFT)
+  channel        OrderChannel
+  poNumber       String?
+  placedById     String       @db.Uuid
+  placedBy       User         @relation("OrderPlacedBy", fields: [placedById], references: [id])
+  approvedById   String?      @db.Uuid
+  approvedBy     User?        @relation("OrderApprovedBy", fields: [approvedById], references: [id])
+  sourceDeviceId String?      @db.Uuid
+  quoteId        String?      @db.Uuid
+  quote          Quote?       @relation(fields: [quoteId], references: [id])
+  subtotalMinor  BigInt       @default(0)
+  taxMinor       BigInt       @default(0)
+  totalMinor     BigInt       @default(0)
+  lines          OrderLine[]
+  version        Int          @default(1) // optimistic concurrency for sync
+  submittedAt    DateTime?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@unique([tradeAccountId, clientRef])
+  @@index([tradeAccountId, status])
+}
+
+model OrderLine {
+  id         String  @id @default(uuid()) @db.Uuid
+  orderId    String  @db.Uuid
+  order      Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId  String  @db.Uuid
+  product    Product @relation(fields: [productId], references: [id])
+  qty        Int
+  unitMinor  BigInt  // server-resolved at submit time; desktop-supplied prices are never trusted
+  lineMinor  BigInt
+  priceSource String // "ACCOUNT" | "TIER" | "LIST" | "QUOTE"
+}
+
+enum QuoteStatus {
+  REQUESTED
+  IN_REVIEW
+  OFFERED
+  ACCEPTED
+  DECLINED
+  EXPIRED
+}
+
+model Quote {
+  id             String       @id @default(uuid()) @db.Uuid
+  number         String       @unique
+  tradeAccountId String       @db.Uuid
+  tradeAccount   TradeAccount @relation(fields: [tradeAccountId], references: [id])
+  status         QuoteStatus  @default(REQUESTED)
+  requestedById  String       @db.Uuid
+  requestedBy    User         @relation("QuoteRequestedBy", fields: [requestedById], references: [id])
+  handledById    String?      @db.Uuid
+  validUntil     DateTime?
+  notes          String?
+  lines          QuoteLine[]
+  orders         Order[]
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+}
+
+model QuoteLine {
+  id           String  @id @default(uuid()) @db.Uuid
+  quoteId      String  @db.Uuid
+  quote        Quote   @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+  productId    String  @db.Uuid
+  product      Product @relation(fields: [productId], references: [id])
+  qty          Int
+  offeredMinor BigInt?
+}
+
+enum LedgerKind {
+  INVOICE
+  CREDIT_NOTE
+  PAYMENT
+  ADJUSTMENT
+}
+
+/// Statement lines. Balance = sum(amountMinor); positive = owed by customer.
+model LedgerEntry {
+  id             String       @id @default(uuid()) @db.Uuid
+  tradeAccountId String       @db.Uuid
+  tradeAccount   TradeAccount @relation(fields: [tradeAccountId], references: [id])
+  kind           LedgerKind
+  reference      String
+  amountMinor    BigInt
+  dueAt          DateTime?
+  postedAt       DateTime     @default(now())
+
+  @@index([tradeAccountId, postedAt])
+}
+
+// ───────────────────────────── Desktop distribution & device integrity ─────────────────────────────
+
+/// Every signed desktop build CI publishes. manifestRoot is the sha256 over the canonical file manifest.
+model DesktopRelease {
+  id            String    @id @default(uuid()) @db.Uuid
+  buildId       String    @unique // e.g. "2026.10.3+win-x64.8f2c1d"
+  version       String
+  platform      String    // "win-x64" | "macos-arm64" | ...
+  manifestRoot  String    // hex sha256
+  manifestSig   String    // base64 Ed25519 signature by release key
+  artifactKey   String    // object-storage key of the signed installer
+  artifactSha256 String
+  revokedAt     DateTime? // a revoked build fails attestation everywhere
+  publishedAt   DateTime  @default(now())
+  grants        DownloadGrant[]
+  devices       Device[]
+}
+
+/// One-time, time-limited permission to download a specific build.
+model DownloadGrant {
+  id         String         @id @default(uuid()) @db.Uuid
+  userId     String         @db.Uuid
+  releaseId  String         @db.Uuid
+  release    DesktopRelease @relation(fields: [releaseId], references: [id])
+  reason     String         // "ONBOARDING" | "UPDATE" | "RECOVERY"
+  incidentId String?        @db.Uuid
+  expiresAt  DateTime
+  usedAt     DateTime?
+  createdAt  DateTime       @default(now())
+}
+
+enum DeviceStatus {
+  PENDING_ENROLLMENT
+  TRUSTED
+  QUARANTINED // tamper reported; certificate revoked
+  RETIRED
+}
+
+model Device {
+  id              String          @id @default(uuid()) @db.Uuid
+  userId          String          @db.Uuid
+  user            User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  label           String
+  publicKey       String          // base64 raw Ed25519 public key (private key never leaves OS keystore)
+  machineHash     String          // sha256(machine id || install salt); regenerated on clean install
+  releaseId       String?         @db.Uuid
+  release         DesktopRelease? @relation(fields: [releaseId], references: [id])
+  status          DeviceStatus    @default(PENDING_ENROLLMENT)
+  certificates    DeviceCertificate[]
+  attestations    Attestation[]
+  lastAttestedAt  DateTime?
+  createdAt       DateTime        @default(now())
+
+  @@unique([userId, machineHash])
+}
+
+/// Cloud-issued certificate binding the device public key to user + release. Revocation is the kill switch.
+model DeviceCertificate {
+  id         String    @id @default(uuid()) @db.Uuid
+  deviceId   String    @db.Uuid
+  device     Device    @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  serial     String    @unique
+  issuedAt   DateTime  @default(now())
+  expiresAt  DateTime
+  revokedAt  DateTime?
+  revokeReason String?
+}
+
+/// Single-use challenge nonces for the attestation handshake.
+model AttestationNonce {
+  nonce     String    @id
+  deviceId  String    @db.Uuid
+  expiresAt DateTime
+  usedAt    DateTime?
+}
+
+enum AttestationVerdict {
+  PASS
+  TAMPER          // signed report of file hash mismatch
+  UNKNOWN_BUILD   // manifest root not in release registry
+  REVOKED_BUILD
+  BAD_SIGNATURE   // not counted as tamper (could be forged by anyone); logged + rate limited
+  REPLAY
+}
+
+model Attestation {
+  id           String             @id @default(uuid()) @db.Uuid
+  deviceId     String             @db.Uuid
+  device       Device             @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  buildId      String
+  manifestRoot String
+  verdict      AttestationVerdict
+  mismatches   Json               // [{ path, expected, actual }]
+  payload      Json               // full signed payload, retained for forensics
+  ip           String?
+  createdAt    DateTime           @default(now())
+
+  @@index([deviceId, createdAt])
+}
+
+model SecurityIncident {
+  id             String        @id @default(uuid()) @db.Uuid
+  tradeAccountId String        @db.Uuid
+  tradeAccount   TradeAccount  @relation(fields: [tradeAccountId], references: [id])
+  deviceId       String        @db.Uuid
+  attestationId  String        @db.Uuid
+  kind           String        // "BINARY_TAMPER" | "UNKNOWN_BUILD"
+  openedAt       DateTime      @default(now())
+  resolvedAt     DateTime?
+  recoveryTokens RecoveryToken[]
+}
+
+/// Emailed recovery token. Only the sha256 is stored; the raw token exists only in the email.
+model RecoveryToken {
+  id          String           @id @default(uuid()) @db.Uuid
+  incidentId  String           @db.Uuid
+  incident    SecurityIncident @relation(fields: [incidentId], references: [id])
+  userId      String           @db.Uuid
+  tokenHash   String           @unique
+  expiresAt   DateTime
+  redeemedAt  DateTime?
+  createdAt   DateTime         @default(now())
+}
+
+// ───────────────────────────── Sync & audit ─────────────────────────────
+
+/// Per-device sync high-water marks. Sync is explicit and cursor based, never free-running.
+model SyncCursor {
+  deviceId        String   @db.Uuid
+  stream          String   // "catalogue" | "pricing" | "orders"
+  serverVersion   BigInt   @default(0)
+  lastSyncedAt    DateTime @default(now())
+
+  @@id([deviceId, stream])
+}
+
+/// Global monotonic sequence used to stamp syncVersion on changed rows.
+model SyncSequence {
+  id    Int    @id @default(1)
+  value BigInt @default(0)
+}
+
+model AuditLog {
+  id        BigInt   @id @default(autoincrement())
+  actorId   String?  @db.Uuid // null = system
+  actorRole Role?
+  accountId String?  @db.Uuid
+  action    String   // "order.submit", "security.lock", "price.update", ...
+  target    String?
+  meta      Json?
+  ip        String?
+  createdAt DateTime @default(now())
+
+  @@index([accountId, createdAt])
+  @@index([action, createdAt])
+}
+
+// ───────────────────────────── Business setup & onboarding ─────────────────────────────
+
+/// One row per install: the business that owns this DROPLET deployment.
+model BusinessProfile {
+  id                  Int       @id @default(1)
+  name                String    @default("DROPLET")
+  supportEmail        String?
+  currency            String    @default("GBP") @db.Char(3)
+  /// One-time link that creates the first administrator. Only the sha256 is stored.
+  setupTokenHash      String?
+  setupTokenExpiresAt DateTime?
+  setupCompletedAt    DateTime?
+  updatedAt           DateTime  @updatedAt
+}
+
+/// Invitation to join as staff (ADMIN / SALES_REP) or as a buyer on a trade account.
+model Invite {
+  id             String    @id @default(uuid()) @db.Uuid
+  tokenHash      String    @unique
+  email          String
+  fullName       String?
+  role           Role
+  tradeAccountId String?   @db.Uuid
+  invitedById    String?   @db.Uuid
+  expiresAt      DateTime
+  acceptedAt     DateTime?
+  revokedAt      DateTime?
+  createdAt      DateTime  @default(now())
+
+  @@index([email])
+}

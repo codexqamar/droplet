@@ -1,0 +1,46 @@
+# DROPLET for Coolify ("Docker Compose" build pack) or any Docker host.
+#
+# Coolify: New Resource → your GitHub repo → Build Pack "Docker Compose" → this file.
+# Set the variables below in Coolify's Environment Variables, give the `droplet` service a
+# domain (port 8080), deploy, then open the logs to find the one-time admin setup link.
+
+services:
+  droplet:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://droplet:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/droplet?schema=public
+      PORTAL_ORIGIN: ${PORTAL_ORIGIN:?set PORTAL_ORIGIN, e.g. https://portal.example.com}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-${PORTAL_ORIGIN}}
+      DROPLET_SIGNING_SECRET: ${DROPLET_SIGNING_SECRET:?set DROPLET_SIGNING_SECRET}
+      DROPLET_MFA_ENC_KEY: ${DROPLET_MFA_ENC_KEY:?set DROPLET_MFA_ENC_KEY (64 hex chars)}
+      DROPLET_OPS_TOKEN: ${DROPLET_OPS_TOKEN:-}
+      RUN_SWEEPER: "1"
+    volumes:
+      - releases:/data/releases
+    expose:
+      - "8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: droplet
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: droplet
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U droplet -d droplet"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  pgdata:
+  releases:

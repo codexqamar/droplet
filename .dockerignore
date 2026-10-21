@@ -1,0 +1,33 @@
+# Only apps/web and apps/cloud-api (plus docker/) are needed to build the image.
+# Everything else stays out of the build context: secrets, local data, build output, desktop.
+
+**/node_modules
+**/dist
+**/dist-desktop
+**/.vite
+**/*.log
+**/.DS_Store
+**/Thumbs.db
+
+# Secrets and local state (never baked into an image)
+**/.env
+**/.env.*
+!**/.env.production.example
+!apps/web/.env.desktop
+**/.admin-credentials*
+**/.keys
+apps/cloud-api/.pgdata
+apps/cloud-api/releases
+
+# Desktop app (built on Windows, published via the release upload endpoint)
+apps/desktop
+
+# Repository and tooling
+.git
+.github
+.claude
+.vscode
+.idea
+docs
+*.md
+!apps/**/README.md

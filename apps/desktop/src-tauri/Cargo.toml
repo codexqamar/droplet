@@ -1,0 +1,32 @@
+[package]
+name = "droplet-desktop"
+version = "0.1.6"
+edition = "2021"
+publish = false
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1.0.215", features = ["derive"] }
+# Default (non preserve_order) Map is a BTreeMap: sorted keys = canonical JSON for signatures.
+serde_json = "1.0.133"
+sha2 = "0.10.8"
+hex = "0.4.3"
+base64 = "0.22.1"
+ed25519-dalek = "2.1.1"
+walkdir = "2.5.0"
+ureq = { version = "2.10.1", features = ["json"] }
+rand = "0.8.5"
+rfd = "0.15.1"
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.52.0"
+windows-sys = { version = "0.59.0", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Security_Cryptography", "Win32_System_Memory"] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

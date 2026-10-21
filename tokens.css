@@ -1,0 +1,29 @@
+/* DROPLET portable portal tokens */
+:root {
+  --color-paper: #e8eef4;
+  --color-ink: #0e1e36;
+  --color-muted: #52627c;
+  --color-accent: #007aff;
+  --color-accent-ink: #ffffff;
+  --color-surface: #ffffff;
+  --color-rule: rgb(255 255 255 / 0.72);
+  --font-display: "Inter Variable", "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-body: "Inter Variable", "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+  --space-xs: 0.25rem;
+  --space-sm: 0.5rem;
+  --space-md: 1rem;
+  --space-lg: 1.5rem;
+  --space-xl: 2rem;
+  --text-sm: 0.875rem;
+  --text-base: 1rem;
+  --text-title: 1.5rem;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in: cubic-bezier(0.7, 0, 0.84, 0);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --dur-fast: 140ms;
+  --dur-base: 220ms;
+  --rule-thin: 1px;
+  --radius-control: 0.75rem;
+  --radius-panel: 1.5rem;
+}

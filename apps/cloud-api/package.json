@@ -1,0 +1,37 @@
+{
+  "name": "@droplet/cloud-api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "db": "tsx scripts/db.ts",
+    "dev": "tsx watch --env-file=.env src/server.ts",
+    "start": "tsx --env-file=.env src/server.ts",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "tsx --test test/*.test.ts",
+    "prisma:generate": "prisma generate",
+    "db:migrate": "prisma migrate deploy",
+    "db:reset": "prisma migrate deploy",
+    "totp": "tsx --env-file=.env scripts/totp.ts",
+    "register-release": "tsx --env-file=.env scripts/register-release.ts",
+    "env:init": "node scripts/env-init.mjs",
+    "setup-link": "tsx --env-file=.env scripts/setup-link.ts",
+    "db:demo": "tsx --env-file=.env prisma/seed.ts",
+    "start:prod": "prisma migrate deploy && node dist/src/server.js",
+    "setup-link:prod": "node dist/scripts/setup-link.js"
+  },
+  "dependencies": {
+    "@fastify/static": "7.0.4",
+    "@prisma/client": "5.22.0",
+    "fastify": "4.28.1",
+    "prisma": "5.22.0",
+    "zod": "3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "22.9.0",
+    "embedded-postgres": "17.10.0-beta.17",
+    "tsx": "4.19.2",
+    "typescript": "5.6.3"
+  }
+}

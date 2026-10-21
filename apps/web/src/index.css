@@ -1,0 +1,319 @@
+/* Hallmark · pre-emit critique: P5 H4 E4 S5 R5 V4 · genre: modern-minimal · macrostructure: Workbench · theme: custom graphite glass
+ * contrast: pass (40–41) · nav: floating dock · footer: none · slop: pass (42–49) · mobile: pass (34, 49, 50–57)
+ */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Theme tokens as RGB channels so Tailwind opacity modifiers work (bg-surface/60 etc). */
+:root {
+  --ink: 14 30 54;
+  --muted: 82 98 124;
+  --line: 255 255 255;
+  --surface: 255 255 255;
+  --accent: 0 122 255;
+  --on-accent: 255 255 255;
+  --ok: 18 148 98;
+  --warn: 208 124 14;
+  --danger: 212 48 72;
+  --shadow: 14 58 110;
+  --highlight: 255 255 255 / 0.65;
+  --bg-base: #e8eef4;
+  --glass: 0.46;
+  --glass-strong: 0.68;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  color-scheme: light;
+}
+
+[data-theme="dark"] {
+  --ink: 228 239 250;
+  --muted: 146 166 192;
+  --line: 148 190 230;
+  --surface: 16 30 52;
+  --accent: 10 132 255;
+  --on-accent: 4 22 40;
+  --ok: 64 205 145;
+  --warn: 247 176 72;
+  --danger: 255 105 126;
+  --shadow: 0 0 0;
+  /* No bright rim on dark glass: a near-invisible highlight keeps depth without a white top edge. */
+  --highlight: 148 190 230 / 0.04;
+  --bg-base: #07111f;
+  --glass: 0.48;
+  --glass-strong: 0.66;
+  color-scheme: dark;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    min-height: 100%;
+  }
+  html,
+  body {
+    overflow-x: clip;
+  }
+  body {
+    @apply font-sans text-ink antialiased;
+    background-color: var(--bg-base);
+    font-feature-settings: "cv11", "ss01", "tnum";
+  }
+  :focus-visible {
+    outline: 2px solid rgb(var(--ink) / 0.82);
+    outline-offset: 2px;
+  }
+
+  /* DROPLET scrollbar: consistent in browsers and the desktop WebView. */
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  *::-webkit-scrollbar-track,
+  *::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+  *::-webkit-scrollbar-thumb {
+    min-height: 44px;
+    border: 3px solid transparent;
+    border-radius: 999px;
+    background-color: rgb(var(--muted) / 0.42);
+    background-clip: content-box;
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    background-color: rgb(var(--ink) / 0.48);
+  }
+  *::-webkit-scrollbar-thumb:active {
+    background-color: rgb(var(--accent) / 0.72);
+  }
+  *::-webkit-scrollbar-button {
+    display: none;
+    width: 0;
+    height: 0;
+  }
+  @supports not selector(::-webkit-scrollbar) {
+    * {
+      scrollbar-color: rgb(var(--muted) / 0.46) transparent;
+      scrollbar-width: thin;
+    }
+  }
+}
+
+@layer components {
+  .glass {
+    background-color: rgb(var(--surface) / var(--glass));
+    box-shadow: inset 0 1px 0 rgb(var(--highlight)), inset 0 0 0 1px rgb(var(--line) / 0.18), 0 18px 50px -32px rgb(var(--shadow) / 0.55);
+    @apply rounded-3xl border border-line/55 backdrop-blur-[28px] backdrop-saturate-150 dark:border-line/[0.08];
+  }
+  .glass-strong {
+    background-color: rgb(var(--surface) / var(--glass-strong));
+    box-shadow: inset 0 1px 0 rgb(var(--highlight));
+    @apply rounded-2xl border border-line/60 backdrop-blur-[22px] backdrop-saturate-150 dark:border-line/[0.08];
+  }
+  /* Tiles and rows that sit INSIDE a glass panel. No second backdrop blur and a light fill, so
+     the panel stays see-through (stacked opaque blur layers read as milky and flat). */
+  .glass-inset {
+    background-color: rgb(var(--surface) / 0.34);
+    box-shadow: inset 0 1px 0 rgb(var(--highlight));
+    @apply rounded-2xl border border-line/50 dark:border-line/[0.07] dark:bg-surface/25;
+  }
+  /* Floating layers (menus, notification list, toasts, suggestions, dialogs). Fully opaque and
+     without backdrop blur: they often sit inside another glass layer, where a nested backdrop
+     filter cannot sample the page, so translucency there just lets content bleed through. */
+  .popover {
+    background-color: rgb(var(--surface));
+    box-shadow: inset 0 1px 0 rgb(var(--highlight)), 0 24px 60px -24px rgb(var(--shadow) / 0.6);
+    @apply rounded-2xl border border-line/60 dark:border-line/[0.1];
+  }
+  /* Glass for layers rendered at the page root (dialogs, menus, notification panel, toasts).
+     They are never nested inside another glass layer, so the backdrop blur samples the page and
+     reads as real frosted glass, matching the panels underneath. */
+  .glass-float {
+    background-color: rgb(var(--surface) / 0.78);
+    box-shadow: inset 0 1px 0 rgb(var(--highlight)), inset 0 0 0 1px rgb(var(--line) / 0.18), 0 30px 80px -30px rgb(var(--shadow) / 0.6);
+    @apply rounded-3xl border border-line/55 backdrop-blur-[32px] backdrop-saturate-[1.6] dark:border-line/[0.1];
+  }
+  [data-theme="dark"] .glass-float {
+    background-color: rgb(var(--surface) / 0.8);
+  }
+  /* Form fields: a visible edge in both themes, on glass panels and on solid dialogs alike
+     (glass-on-white with a white edge disappears inside a solid dialog). */
+  .field {
+    background-color: rgb(var(--surface) / 0.55);
+    border: 1px solid rgb(var(--ink) / 0.12);
+    box-shadow: inset 0 1px 0 rgb(var(--highlight));
+    @apply rounded-xl text-ink outline-none transition placeholder:text-muted/70 focus:border-accent focus:ring-2 focus:ring-accent/25;
+  }
+  [data-theme="dark"] .field {
+    background-color: rgb(var(--surface) / 0.45);
+    border-color: rgb(var(--ink) / 0.12);
+  }
+  .chip {
+    @apply inline-flex items-center gap-1 rounded-full border border-line/80 bg-surface/80 px-2.5 py-0.5 text-[11px] font-medium text-ink dark:border-line/[0.07];
+  }
+  .btn-primary {
+    @apply inline-flex min-h-11 items-center justify-center gap-2 whitespace-nowrap rounded-xl bg-accent px-4 py-2.5 text-sm font-semibold text-onaccent shadow-[0_10px_24px_-14px_rgb(var(--shadow)/0.8)] transition-[transform,opacity,background-color] duration-150 hover:bg-accent/90 active:translate-y-px disabled:cursor-not-allowed disabled:opacity-50;
+  }
+  .btn-ghost {
+    @apply inline-flex min-h-11 items-center justify-center gap-2 whitespace-nowrap rounded-xl border border-line/70 bg-surface/55 px-3.5 py-2.5 text-sm font-medium text-ink transition-[transform,background-color] duration-150 hover:bg-surface/85 active:translate-y-px disabled:cursor-not-allowed disabled:opacity-50 dark:border-line/[0.08];
+  }
+  .section-title {
+    @apply text-[17px] font-semibold tracking-tight text-ink;
+  }
+  .label {
+    @apply text-xs font-medium text-muted;
+  }
+  .num {
+    font-variant-numeric: tabular-nums;
+  }
+
+  .portal-heading {
+    @apply flex min-w-0 flex-col gap-3 px-1 sm:flex-row sm:items-end sm:justify-between;
+  }
+  .portal-heading h1 {
+    @apply min-w-0 text-2xl font-semibold tracking-[-0.025em];
+    overflow-wrap: anywhere;
+  }
+  .portal-heading p {
+    @apply mt-1 max-w-[68ch] text-sm leading-6 text-muted;
+  }
+  .portal-heading__meta {
+    @apply w-fit shrink-0 whitespace-nowrap rounded-full border border-line/70 bg-surface/45 px-3 py-1.5 text-xs font-medium text-muted backdrop-blur-xl dark:border-line/[0.08];
+  }
+  .dock-material {
+    background-color: rgb(var(--surface) / 0.58);
+  }
+  .dock-item {
+    @apply flex w-[78px] flex-col items-center gap-1 whitespace-nowrap rounded-2xl px-2 py-2 text-[11px] font-medium text-muted transition-[transform,color,background-color] duration-150 sm:w-[92px];
+  }
+  .dock-item:hover { @apply text-ink; }
+  .dock-item:active { transform: translateY(1px); }
+  .dock-item--active { @apply bg-surface/65 text-ink; box-shadow: inset 0 1px 0 rgb(var(--highlight)); }
+  .dock-item__icon { @apply grid h-9 w-9 place-items-center rounded-xl border border-line/55 bg-surface/35 dark:border-line/[0.08]; }
+  .dock-item--active .dock-item__icon { @apply border-accent bg-accent text-onaccent; }
+  .catalogue-toolbar { @apply flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between; }
+  .catalogue-search { @apply flex h-11 w-full items-center gap-2 rounded-xl border border-line/65 bg-surface/50 px-3 text-muted outline outline-2 outline-transparent sm:max-w-sm dark:border-line/[0.08]; }
+  .catalogue-search:focus-within { outline-color: rgb(var(--ink) / 0.78); }
+  .catalogue-search input { @apply min-w-0 flex-1 bg-transparent text-sm text-ink outline-none placeholder:text-muted; }
+  .catalogue-list { @apply divide-y divide-line/60 dark:divide-line/[0.08]; }
+  .catalogue-row { @apply grid min-w-0 grid-cols-1 gap-4 py-4 sm:grid-cols-[minmax(0,1.5fr)_minmax(8rem,0.55fr)_minmax(9rem,0.65fr)_auto] sm:items-center; }
+  .catalogue-row__identity { @apply flex min-w-0 items-center gap-3; }
+  .catalogue-row__icon { @apply grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-line/55 bg-surface/45 text-muted dark:border-line/[0.08]; }
+  .catalogue-row code { @apply font-mono text-[11px] font-semibold text-muted; }
+  .catalogue-row h3 { @apply truncate text-sm font-semibold; }
+  .catalogue-row p, .catalogue-row small { @apply block text-[11px] text-muted; }
+  .catalogue-row__label { @apply mb-0.5 block text-[10px] font-medium uppercase tracking-[0.12em] text-muted; }
+  .catalogue-row strong { @apply block text-sm font-semibold; }
+  .catalogue-row__action { @apply w-full sm:w-auto; }
+  .empty-state { @apply grid place-items-center py-16 text-center text-muted; }
+  .empty-state svg { @apply h-6 w-6; }
+  .empty-state h3 { @apply mt-3 text-sm font-semibold text-ink; }
+  .empty-state p { @apply mt-1 text-xs; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Desktop shell chrome: omitted entirely from the web target. */
+.desktop-frame {
+  position: relative;
+  height: 100vh;
+  overflow: clip;
+  border: 1px solid rgb(var(--line) / 0.34);
+  border-radius: 18px;
+  background-color: var(--bg-base);
+  box-shadow: inset 0 1px 0 rgb(var(--highlight));
+}
+.desktop-frame--maximized {
+  border-width: 0;
+  border-radius: 0;
+}
+.desktop-titlebar {
+  position: absolute;
+  inset: 0 0 auto;
+  z-index: 100;
+  display: flex;
+  height: 44px;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid rgb(var(--line) / 0.18);
+  background-color: rgb(var(--surface) / 0.56);
+  color: rgb(var(--ink));
+  backdrop-filter: blur(28px) saturate(150%);
+  -webkit-app-region: drag;
+  user-select: none;
+}
+.desktop-titlebar__brand {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  padding-inline: 14px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  line-height: 1;
+}
+.desktop-titlebar__mark {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  border-radius: 8px;
+  background-color: rgb(var(--accent));
+  color: rgb(var(--on-accent));
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.28);
+}
+.desktop-titlebar__context {
+  overflow: hidden;
+  color: rgb(var(--muted));
+  font-weight: 500;
+  letter-spacing: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.desktop-titlebar__controls {
+  display: flex;
+  align-items: stretch;
+  align-self: stretch;
+  -webkit-app-region: no-drag;
+}
+.desktop-titlebar__controls button {
+  display: grid;
+  width: 46px;
+  min-height: 44px;
+  place-items: center;
+  border-radius: 0;
+  color: rgb(var(--muted));
+  transition: background-color 140ms var(--ease-out), color 140ms var(--ease-out);
+}
+.desktop-titlebar__controls button:hover {
+  background-color: rgb(var(--surface) / 0.72);
+  color: rgb(var(--ink));
+}
+.desktop-titlebar__controls button:active {
+  background-color: rgb(var(--ink) / 0.12);
+}
+.desktop-titlebar__controls .desktop-titlebar__close:hover {
+  background-color: rgb(var(--danger));
+  color: white;
+}
+.desktop-content {
+  position: absolute;
+  inset: 44px 0 0;
+  overflow: auto;
+  overscroll-behavior: none;
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .desktop-titlebar {
+    background-color: rgb(var(--surface));
+    backdrop-filter: none;
+  }
+}

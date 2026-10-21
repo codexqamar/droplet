@@ -1,0 +1,15 @@
+{
+  "name": "droplet",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "setup": "npm install && npm --prefix apps/cloud-api install && npm --prefix apps/web install && npm --prefix apps/desktop install && npm --prefix apps/cloud-api run env:init && npm --prefix apps/cloud-api run prisma:generate && concurrently -k -s first -n db,init \"npm --prefix apps/cloud-api run db\" \"wait-on tcp:127.0.0.1:5544 && npm --prefix apps/cloud-api run db:reset\"",
+    "dev": "concurrently -k -n db,api,web -c gray,cyan,blue \"npm --prefix apps/cloud-api run db\" \"wait-on tcp:127.0.0.1:5544 && npm --prefix apps/cloud-api run db:migrate && npm --prefix apps/cloud-api run dev\" \"npm --prefix apps/web run dev\"",
+    "desktop:build": "npm --prefix apps/desktop run build",
+    "test": "npm --prefix apps/cloud-api test && npm --prefix apps/web run typecheck"
+  },
+  "devDependencies": {
+    "concurrently": "9.1.0",
+    "wait-on": "8.0.1"
+  }
+}

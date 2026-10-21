@@ -1,0 +1,21 @@
+[project]
+name = "droplet-daemon"
+version = "0.1.0"
+description = "DROPLET desktop local engine (listen server) - 0ms catalogue, SKU lookup and draft orders"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi==0.115.4",
+  "uvicorn==0.32.0",
+  "httpx==0.27.2",
+  "cryptography==43.0.3",
+  "keyring==25.5.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest==8.3.3", "pyinstaller==6.11.0"]
+
+[project.scripts]
+droplet-daemon = "droplet_daemon.__main__:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
