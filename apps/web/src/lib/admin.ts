@@ -4,7 +4,7 @@ import { cloudCall } from "./api";
 
 export type Role = "TRADE_CUSTOMER" | "SALES_REP" | "ADMIN";
 export type AccountStatus = "PENDING_APPROVAL" | "APPROVED" | "REJECTED" | "SUSPENDED";
-export type OrderStatus = "DRAFT" | "PENDING_APPROVAL" | "SUBMITTED" | "CONFIRMED" | "PART_SHIPPED" | "SHIPPED" | "INVOICED" | "CANCELLED";
+export type OrderStatus = "DRAFT" | "AWAITING_BUYER_APPROVAL" | "PENDING_APPROVAL" | "SUBMITTED" | "CONFIRMED" | "PART_SHIPPED" | "SHIPPED" | "INVOICED" | "CANCELLED";
 export type QuoteStatus = "REQUESTED" | "IN_REVIEW" | "OFFERED" | "ACCEPTED" | "DECLINED" | "EXPIRED";
 
 export interface Overview {
@@ -27,6 +27,7 @@ export interface AccountRow {
   priceTierId: string | null;
   creditLimitMinor: number;
   paymentTermsDays: number;
+  poRequired: boolean;
   currency: string;
   balanceMinor: number;
   rep: { id: string; name: string } | null;
@@ -39,7 +40,8 @@ export interface AccountRow {
 
 export interface AccountDetail {
   account: AccountRow;
-  users: Array<{ id: string; name: string; email: string; owner: boolean; active: boolean; lastLoginAt: string | null }>;
+  users: Array<{ id: string; name: string; email: string; owner: boolean; canApprove: boolean; spendLimitMinor: number | null; active: boolean; lastLoginAt: string | null }>;
+  payments: Array<{ id: string; amountMinor: number; reference: string; provider: string; method: string | null; status: string; at: string }>;
   pendingInvites: Array<{ id: string; email: string; expiresAt: string }>;
   prices: Array<{ id: string; sku: string; name: string; minQty: number; unitMinor: number; listMinor: number; validTo: string | null }>;
   ledger: Array<{ id: string; kind: string; reference: string; amountMinor: number; postedAt: string; dueAt: string | null }>;
@@ -57,6 +59,7 @@ export interface AdminOrder {
   totalMinor: number;
   currency: string;
   next: OrderStatus[];
+  tracking: { carrier: string | null; number: string | null; url: string | null; shippedAt: string | null } | null;
   lines: Array<{ sku: string; name: string; qty: number; unitMinor: number; lineMinor: number; source: string }>;
 }
 
@@ -81,8 +84,41 @@ export interface Product {
   packSize: number;
   listMinor: number;
   stock: number;
+  barcode: string | null;
+  leadTimeDays: number;
+  levels: Array<{ warehouseId: string; qty: number }>;
   active: boolean;
   tierPrices: Array<{ tierId: string; minQty: number; unitMinor: number }>;
+}
+
+export interface Warehouse {
+  id: string;
+  code: string;
+  name: string;
+  active: boolean;
+  units?: number;
+  skus?: number;
+}
+
+export interface Integrations {
+  apiKeys: Array<{ id: string; name: string; prefix: string; createdAt: string; lastUsedAt: string | null }>;
+  webhook: { url: string | null; configured: boolean };
+  mail: { mode: "smtp" | "log"; from: string | null; host: string | null };
+  payments: { enabled: boolean; provider: "stripe" | "demo" | null; methods: string[] };
+  apiBase: string;
+}
+
+export interface ImportRow {
+  sku: string;
+  name?: string;
+  description?: string | null;
+  barcode?: string | null;
+  uom?: string;
+  packSize?: number;
+  listMinor?: number;
+  leadTimeDays?: number;
+  active?: boolean;
+  stock?: Record<string, number>;
 }
 
 export interface Tier {
@@ -106,9 +142,10 @@ export interface SecurityData {
   devices: Array<{ id: string; label: string; user: string; account: string; status: string; version: string; lastAttestedAt: string | null; createdAt: string }>;
   incidents: Array<{ id: string; account: { id: string; name: string; state: string }; kind: string; openedAt: string; resolvedAt: string | null }>;
   releases: Array<{ id: string; buildId: string; version: string; platform: string; publishedAt: string; revokedAt: string | null; devices: number }>;
+  mfaKeyFingerprint: string;
 }
 
-export type Terms = { priceTierId?: string | null; creditLimitMinor?: number; paymentTermsDays?: number; repId?: string | null; legalName?: string; phone?: string | null };
+export type Terms = { priceTierId?: string | null; creditLimitMinor?: number; paymentTermsDays?: number; repId?: string | null; legalName?: string; phone?: string | null; poRequired?: boolean };
 
 const qs = (p: Record<string, string | undefined>) => {
   const e = Object.entries(p).filter(([, v]) => v);
@@ -145,13 +182,29 @@ export const admin = {
   postLedger: (id: string, body: { kind: string; reference: string; amountMinor: number; increase?: boolean }) => post(`/v1/admin/accounts/${id}/ledger`, body),
   unlock: (id: string, reason: string) => post(`/v1/admin/accounts/${id}/unlock`, { reason }),
   orders: (status?: string, q?: string) => get<{ orders: AdminOrder[] }>(`/v1/admin/orders${qs({ status, q })}`),
-  setOrderStatus: (number: string, status: OrderStatus) => post(`/v1/admin/orders/${encodeURIComponent(number)}/status`, { status }),
+  setOrderStatus: (number: string, status: OrderStatus, tracking?: { carrier?: string; trackingNumber?: string; trackingUrl?: string }) =>
+    post(`/v1/admin/orders/${encodeURIComponent(number)}/status`, { status, ...tracking }),
   quotes: (status?: string) => get<{ quotes: AdminQuote[] }>(`/v1/admin/quotes${qs({ status })}`),
   offerQuote: (number: string, validDays: number, lines: Array<{ id: string; offeredMinor: number }>) => post(`/v1/admin/quotes/${encodeURIComponent(number)}/offer`, { validDays, lines }),
   quoteAction: (number: string, action: "review" | "decline") => post(`/v1/admin/quotes/${encodeURIComponent(number)}/${action}`),
-  products: () => get<{ products: Product[]; tiers: Tier[] }>("/v1/admin/products"),
-  createProduct: (body: Omit<Product, "id" | "tierPrices">) => post<{ id: string }>("/v1/admin/products", body),
-  updateProduct: (id: string, body: Partial<Omit<Product, "id" | "sku" | "tierPrices">>) => cloudCall<{ ok: true }>("PATCH", `/v1/admin/products/${id}`, body),
+  products: () => get<{ products: Product[]; tiers: Tier[]; warehouses: Warehouse[] }>("/v1/admin/products"),
+  createProduct: (body: Omit<Product, "id" | "tierPrices" | "levels">) => post<{ id: string }>("/v1/admin/products", body),
+  updateProduct: (id: string, body: Partial<Omit<Product, "id" | "sku" | "tierPrices" | "levels" | "stock">>) => cloudCall<{ ok: true }>("PATCH", `/v1/admin/products/${id}`, body),
+  setStock: (id: string, levels: Array<{ warehouseId: string; qty: number }>) => cloudCall<{ ok: true; stock: number }>("PUT", `/v1/admin/products/${id}/stock`, { levels }),
+  importProducts: (rows: ImportRow[]) => post<{ created: number; updated: number; errors: Array<{ sku: string; error: string }> }>("/v1/admin/products/import", rows),
+  warehouses: () => get<{ warehouses: Warehouse[] }>("/v1/admin/warehouses"),
+  createWarehouse: (code: string, name: string) => post<{ id: string }>("/v1/admin/warehouses", { code, name }),
+  updateWarehouse: (id: string, body: { name?: string; active?: boolean }) => cloudCall<{ ok: true }>("PATCH", `/v1/admin/warehouses/${id}`, body),
+  setBuyerControls: (userId: string, body: { canApprove?: boolean; spendLimitMinor?: number | null }) => cloudCall<{ ok: true }>("PATCH", `/v1/admin/users/${userId}/buyer`, body),
+  integrations: () => get<Integrations>("/v1/admin/integrations"),
+  createApiKey: (name: string) => post<{ id: string; token: string }>("/v1/admin/integrations/keys", { name }),
+  revokeApiKey: (id: string) => cloudCall<{ ok: true }>("DELETE", `/v1/admin/integrations/keys/${id}`),
+  setWebhook: (url: string | null) => cloudCall<{ ok: true; secret: string | null }>("PUT", "/v1/admin/integrations/webhook", { url }),
+  testWebhook: () => post<{ ok: boolean; status?: number; error?: string }>("/v1/admin/integrations/webhook/test"),
+  testMail: () => post<{ ok: true; mode: string; to: string }>("/v1/admin/integrations/mail/test"),
+  exportUrl: (kind: "invoices" | "payments" | "orders" | "products", format: "generic" | "xero" | "sage" = "generic", from?: string, to?: string) =>
+    `/v1/admin/exports/${kind}.csv${qs({ format: format === "generic" ? undefined : format, from, to })}`,
+  loadDemoData: () => post<{ loaded: boolean; message: string; password?: string; logins?: Array<{ email: string; name: string; account: string; note: string }> }>("/v1/admin/demo-data"),
   createTier: (name: string) => post<{ id: string }>("/v1/admin/tiers", { name }),
   setTierPrices: (productId: string, tierId: string, breaks: Array<{ minQty: number; unitMinor: number }>) => cloudCall<{ ok: true }>("PUT", `/v1/admin/products/${productId}/tier-prices`, { tierId, breaks }),
   team: () => get<{ staff: StaffMember[]; invites: Array<{ id: string; email: string; role: Role; expiresAt: string }> }>("/v1/admin/team"),
@@ -163,7 +216,7 @@ export const admin = {
   security: () => get<SecurityData>("/v1/admin/security"),
   revokeDevice: (id: string) => post(`/v1/admin/devices/${id}/revoke`),
   revokeRelease: (id: string) => post(`/v1/admin/releases/${id}/revoke`),
-  settings: () => get<{ name: string; supportEmail: string | null; currency: string }>("/v1/admin/settings"),
+  settings: () => get<{ name: string; supportEmail: string | null; currency: string; demoMode: boolean; demoLoaded: boolean }>("/v1/admin/settings"),
   updateSettings: (body: { name?: string; supportEmail?: string | null; currency?: string }) => cloudCall<{ ok: true }>("PATCH", "/v1/admin/settings", body),
   audit: () => get<{ entries: Array<{ id: string; at: string; actor: string; role: Role | null; action: string; target: string | null; ip: string | null }> }>("/v1/admin/audit"),
 };

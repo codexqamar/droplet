@@ -3,6 +3,7 @@
 export type PriceSource = "ACCOUNT" | "TIER" | "LIST";
 export type OrderStatus =
   | "DRAFT"
+  | "AWAITING_BUYER_APPROVAL"
   | "PENDING_APPROVAL"
   | "SUBMITTED"
   | "CONFIRMED"
@@ -19,8 +20,19 @@ export interface CatalogueItem {
   packSize: number;
   listMinor: number;
   stock: number;
+  /** Supplier lead time when out of stock (web; the desktop cache may not carry it). */
+  leadTimeDays?: number;
+  barcode?: string | null;
+  /** Availability per warehouse / branch. */
+  branches?: Branch[];
   /** Negotiated price breaks for this account, ascending by minQty. */
   breaks: Array<{ minQty: number; unitMinor: number; source: PriceSource }>;
+}
+
+export interface Branch {
+  code: string;
+  name: string;
+  qty: number;
 }
 
 export interface LineItem {
@@ -38,6 +50,8 @@ export interface OrderSummary {
   items: LineItem[];
   totalMinor: number;
   status: OrderStatus;
+  placedById?: string;
+  tracking?: { carrier: string | null; number: string | null; url: string | null; shippedAt: string | null } | null;
 }
 
 export interface QuoteSummary {
@@ -78,8 +92,37 @@ export interface AccountContext {
   tier: string;
   currency: string;
   securityState: SecurityState;
-  user: { name: string; email: string; role: "TRADE_CUSTOMER" | "SALES_REP" | "ADMIN"; initials: string };
+  user: { name: string; email: string; role: "TRADE_CUSTOMER" | "SALES_REP" | "ADMIN"; initials: string; owner?: boolean; canApprove?: boolean; spendLimitMinor?: number | null };
   rep: { name: string; email: string } | null;
+  poRequired?: boolean;
+}
+
+export interface PaymentsInfo {
+  enabled: boolean;
+  provider: "stripe" | "demo" | null;
+  methods: string[];
+  recent: Array<{ id: string; amountMinor: number; reference: string; status: "PENDING" | "SUCCEEDED" | "FAILED" | "CANCELLED"; method: string | null; at: string }>;
+}
+
+export interface OrderList {
+  id: string;
+  name: string;
+  note: string | null;
+  createdBy: string;
+  updatedAt: string;
+  lastUsedAt: string | null;
+  items: Array<{ sku: string; name: string; qty: number }>;
+}
+
+export interface TeamMember {
+  id: string;
+  name: string;
+  email: string;
+  owner: boolean;
+  canApprove: boolean;
+  spendLimitMinor: number | null;
+  active: boolean;
+  lastLoginAt: string | null;
 }
 
 export interface Dashboard {
@@ -91,6 +134,8 @@ export interface Dashboard {
   ledger: LedgerLine[];
   devices: DeviceSummary[];
   catalogue: CatalogueItem[];
+  /** Web only: online payment of statement balances. */
+  payments?: PaymentsInfo;
   /** Desktop only: epoch ms of the last successful sync. */
   lastSyncAt?: number | null;
 }

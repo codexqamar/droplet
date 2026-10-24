@@ -184,7 +184,7 @@
     background-color: rgb(var(--surface) / 0.58);
   }
   .dock-item {
-    @apply flex w-[78px] flex-col items-center gap-1 whitespace-nowrap rounded-2xl px-2 py-2 text-[11px] font-medium text-muted transition-[transform,color,background-color] duration-150 sm:w-[92px];
+    @apply flex w-[64px] flex-col items-center gap-1 whitespace-nowrap rounded-2xl px-1.5 py-2 text-[10px] font-medium text-muted transition-[transform,color,background-color] duration-150 sm:w-[92px] sm:px-2 sm:text-[11px];
   }
   .dock-item:hover { @apply text-ink; }
   .dock-item:active { transform: translateY(1px); }

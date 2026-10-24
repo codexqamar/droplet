@@ -86,7 +86,26 @@ The desktop app's title bar has an **Admin portal** button (shield icon), and th
 has **Staff member? Sign in to the admin portal**. Staff sign in with email, password and
 authenticator code; the session is held in memory by the app and ends when it closes.
 
-## Development data
+## Buyer features to show a distributor
 
-`npm run setup` creates an empty install. Optional demo data for local development only:
-`npm --prefix apps/cloud-api run db:demo` (refuses to run on an install that has completed setup).
+* **Saved lists** (Lists): build an order once, save it per job, site or van, add it back in one tap.
+* **CSV / paste / scan** in Quick order: upload a spreadsheet of `sku,qty`, or scan barcodes with a phone camera.
+* **Live stock by branch** with lead times on backorder items (Catalogue).
+* **Pay online** (Statements): card or Direct Debit through Stripe; the payment posts to the statement at once.
+* **Team** (account owners): invite colleagues, nominate approvers, set spending limits. Orders above a buyer's limit wait for an approver on their own account before they reach you.
+* **PO numbers**: tick "Require a purchase order number" on an account's Terms.
+* **Tracking**: when staff mark an order shipped they add the carrier and tracking number; the buyer is emailed and sees a tracking link.
+
+## Integrations (admin portal)
+
+Integrations shows email and payment status, creates API keys for an ERP or accounting connector,
+sets a signed webhook, and downloads Xero / Sage CSV exports. The integration API lives at
+`/v1/integration` (`PUT /products`, `PUT /stock`, `PUT /contract-prices`, `GET /orders`,
+`POST /orders/:number/status`, `GET /invoices`, `GET /payments`, `GET /accounts`).
+
+## Demo data
+
+`npm run setup` creates an empty install. On a demo deployment set `DROPLET_DEMO=1`, then load the
+sample catalogue and trade accounts from **Settings → Load demo data**, or run
+`node dist/scripts/demo-data.js` in the container (`npm --prefix apps/cloud-api run db:demo` locally).
+It only adds data and does nothing if the demo accounts already exist.

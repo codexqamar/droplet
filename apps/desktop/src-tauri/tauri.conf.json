@@ -3,7 +3,7 @@
   "productName": "DROPLET",
   "mainBinaryName": "droplet",
   "identifier": "com.droplet.desktop",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "build": {
     "frontendDist": "../../web/dist-desktop"
   },

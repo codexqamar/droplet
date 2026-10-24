@@ -1,8 +1,9 @@
 import { randomBytes } from "node:crypto";
-import type { OrderChannel } from "@prisma/client";
+import type { Order, OrderChannel, User } from "@prisma/client";
 import { HttpError } from "./auth.js";
 import type { Tx } from "./db.js";
 import { openBalanceMinor, resolveUnitPrice } from "./pricing.js";
+import { emit } from "./webhooks.js";
 
 export interface LineInput {
   sku: string;
@@ -29,9 +30,21 @@ async function priceLines(tx: Tx, tradeAccountId: string, lines: LineInput[]) {
   return { priced, subtotal };
 }
 
+/** Account owners and nominated approvers sign off colleagues' orders above their spend limit. */
+export const isOrderApprover = (u: Pick<User, "isAccountOwner" | "canApproveOrders">): boolean => u.isAccountOwner || u.canApproveOrders;
+
+/** Supplier-side credit check: over the account's limit goes to the account manager. */
+export async function creditStatus(tx: Tx, tradeAccountId: string, totalMinor: bigint): Promise<"SUBMITTED" | "PENDING_APPROVAL"> {
+  const account = await tx.tradeAccount.findUniqueOrThrow({ where: { id: tradeAccountId } });
+  return (await openBalanceMinor(tx, account.id)) + totalMinor > account.creditLimitMinor ? "PENDING_APPROVAL" : "SUBMITTED";
+}
+
 /**
  * Single order-creation path for web, desktop sync and rep channels. Prices are always resolved
- * here; over-credit submissions are routed to the account manager for approval.
+ * here. Two approval gates, in order:
+ *   1. buyer side: a buyer's order above their personal spend limit waits for an approver on
+ *      their own account (AWAITING_BUYER_APPROVAL);
+ *   2. supplier side: over the account's credit limit goes to the account manager (PENDING_APPROVAL).
  */
 export async function createOrder(
   tx: Tx,
@@ -48,8 +61,14 @@ export async function createOrder(
 ) {
   const { priced, subtotal } = await priceLines(tx, args.tradeAccountId, args.lines);
   const account = await tx.tradeAccount.findUniqueOrThrow({ where: { id: args.tradeAccountId } });
-  const overCredit = (await openBalanceMinor(tx, account.id)) + subtotal > account.creditLimitMinor;
-  const status = !args.submit ? "DRAFT" : overCredit ? "PENDING_APPROVAL" : "SUBMITTED";
+  // Desktop orders may have been written offline before the rule existed; they are never dropped.
+  if (args.submit && account.poRequired && !args.poNumber?.trim() && args.channel !== "DESKTOP") {
+    throw new HttpError(422, "PO_REQUIRED", "This account requires a purchase order number on every order.");
+  }
+  const user = await tx.user.findUniqueOrThrow({ where: { id: args.userId } });
+  const overSpendLimit =
+    user.role === "TRADE_CUSTOMER" && !isOrderApprover(user) && user.spendLimitMinor !== null && subtotal > user.spendLimitMinor;
+  const status = !args.submit ? "DRAFT" : overSpendLimit ? "AWAITING_BUYER_APPROVAL" : await creditStatus(tx, account.id, subtotal);
 
   const order = await tx.order.create({
     data: {
@@ -77,6 +96,12 @@ export async function createOrder(
     },
   });
   return { order, status, priced, subtotal };
+}
+
+/** Integration event for a placed order (call after the transaction commits). */
+export function emitOrder(order: Pick<Order, "number" | "status" | "channel" | "poNumber" | "totalMinor" | "tradeAccountId">, event: "order.submitted" | "order.status" = "order.submitted"): void {
+  if (order.status === "DRAFT") return;
+  emit(event, { number: order.number, status: order.status, channel: order.channel, poNumber: order.poNumber, totalMinor: Number(order.totalMinor), tradeAccountId: order.tradeAccountId });
 }
 
 export async function createQuote(tx: Tx, args: { tradeAccountId: string; userId: string; lines: LineInput[]; notes?: string | null }) {

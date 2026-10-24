@@ -54,8 +54,24 @@ apps/
     scripts/      build.ps1 (full release pipeline), make-icons.mjs
 ```
 
-## Not production-ready yet
+## What buyers and distributors get
 
-* **Code signing.** The installer is not Authenticode-signed; SmartScreen will warn. Add your certificate (or Azure Trusted Signing) as `bundle.windows.signCommand` in `tauri.conf.json`.
-* **Release key.** The dev key lives on disk in `.keys/`; production signing belongs in an HSM/KMS.
-* **Email.** All emails (recovery, approvals, invitations, quote offers) print to the API console; bind `setMailTransport` to SES/Postmark.
+* **Ordering:** quick order by SKU, paste or **CSV upload**, **camera barcode scanning** on phones, reorder, and **saved order lists** per job, site or van. Prices resolve server-side: contract, then tier, then list.
+* **Live stock:** availability per **branch/warehouse**, refreshed every 15 seconds in the portal, with **lead times** on backorder items.
+* **Pay online:** statement balances and overdue invoices by card or **Bacs Direct Debit** (Stripe Checkout); payments post to the statement immediately.
+* **Multi-user trade accounts:** owners invite colleagues, nominate approvers and set **per-buyer spending limits**; orders above a limit wait for the customer's own approver. Accounts can **require a PO number**.
+* **Shipment tracking:** carrier, tracking number and link on every shipped order, emailed to the buyer.
+* **Mobile:** the portal is phone-friendly and installable to the home screen (PWA).
+* **Accounting / ERP:** an API-key integration API (catalogue, stock and contract prices in; orders, invoices and payments out), signed webhooks, and Xero / Sage CSV exports.
+
+## Demo instance
+
+Set `DROPLET_DEMO=1` (and optionally `DEMO_PASSWORD`) on a separate demo deployment, create the admin from the setup link, then **Settings → Load demo data** (or `node dist/scripts/demo-data.js` in the container). It adds three branches, 26 products and three trade accounts with contract prices, orders, saved lists, an order waiting for buyer approval, and a simulated checkout. Never enable it on a distributor's live install. Locally: `npm --prefix apps/cloud-api run db:demo`.
+
+## Before a real distributor goes live
+
+* **Code signing.** `npm run desktop:build -- -Production -SignThumbprint <cert>` (or `-SignCommand` for Azure Trusted Signing). The build signs the app, the local engine, the installer and uninstaller, verifies the signatures and refuses `-Production` without them.
+* **Release key off the build machine.** Provide the Ed25519 release key as `DROPLET_RELEASE_KEY` from your secret store (never written to disk) or `-ReleaseKeyFile` on removable/mounted storage. `-Production` refuses the dev key in `.keys/`.
+* **Email.** Set `SMTP_URL` and `MAIL_FROM` (Postmark, SES, Resend, Mailgun, Microsoft 365). Admin portal → Integrations → **Send test email**.
+* **MFA key backup.** Store `DROPLET_MFA_ENC_KEY` in your password manager or vault. Admin portal → Security shows its fingerprint so you can check the backup matches.
+* **Payments.** Set `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PAYMENT_METHODS=card,bacs_debit` and add the webhook in Stripe.

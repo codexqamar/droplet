@@ -2,6 +2,7 @@ import { AlertTriangle, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { LockScreen } from "./components/LockScreen";
 import { DesktopChrome } from "./components/DesktopChrome";
+import { DemoCheckout } from "./pages/TradeExtras";
 import { Dashboard } from "./Dashboard";
 import { ApiError, auth, desktop, isDesktop, portal, SIGNED_OUT_EVENT, type DesktopAccount, type Me } from "./lib/api";
 import { navigate, usePath, useTheme, type Theme } from "./lib/nav";
@@ -134,6 +135,9 @@ function WebRoot() {
         onMfaEnabled={() => setMe({ ...me, mfaEnabled: true })}
       />
     );
+  }
+  if (session === "trade" && data && path.startsWith("/pay/demo/")) {
+    return <DemoCheckout id={path.slice("/pay/demo/".length)} business={data.account.legalName} />;
   }
   if (session === "trade" && data) {
     return <Dashboard data={data} reload={load} theme={theme} path={path} onToggleTheme={toggleTheme} onSignOut={() => void signOut()} />;

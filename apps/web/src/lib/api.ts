@@ -1,4 +1,4 @@
-import type { Dashboard, LineItem } from "./types";
+import type { Branch, Dashboard, LineItem, OrderList, TeamMember } from "./types";
 
 /**
  * One UI, two transports. The web build talks to the cloud API with a session cookie; the
@@ -117,6 +117,23 @@ export const portal = {
   placeOrder: (lines: LineItem[], poNumber: string | undefined, mode: "submit" | "draft" = "submit") =>
     call<PlaceOrderResult>("POST", "/v1/orders", { lines, poNumber: poNumber || undefined, mode }),
   requestQuote: (lines: LineItem[], notes?: string) => call<{ number: string }>("POST", "/v1/quotes", { lines, notes }),
+};
+
+/** Web-only trade portal features (the desktop engine works offline and does not carry these). */
+export const trade = {
+  stock: () => http<{ at: string; items: Array<{ sku: string; stock: number; leadTimeDays: number; branches: Branch[] }> }>("GET", "/v1/portal/stock"),
+  lists: () => http<{ lists: OrderList[] }>("GET", "/v1/portal/lists"),
+  createList: (name: string, lines: LineItem[], note?: string | null) => http<{ id: string }>("POST", "/v1/portal/lists", { name, note: note ?? null, lines }),
+  updateList: (id: string, name: string, lines: LineItem[], note?: string | null) => http<{ ok: true }>("PUT", `/v1/portal/lists/${id}`, { name, note: note ?? null, lines }),
+  deleteList: (id: string) => http<{ ok: true }>("DELETE", `/v1/portal/lists/${id}`),
+  listUsed: (id: string) => http<{ ok: true }>("POST", `/v1/portal/lists/${id}/used`, {}),
+  team: () => http<{ users: TeamMember[]; invites: Array<{ id: string; email: string; expiresAt: string }> }>("GET", "/v1/portal/team"),
+  inviteColleague: (email: string, fullName?: string) => http<{ inviteUrl: string }>("POST", "/v1/portal/team/invites", { email, fullName }),
+  updateMember: (id: string, body: { canApprove?: boolean; spendLimitMinor?: number | null; active?: boolean }) => http<{ ok: true }>("PATCH", `/v1/portal/team/${id}`, body),
+  approveOrder: (number: string, action: "approve" | "reject") => http<{ number: string; status: string }>("POST", `/v1/portal/orders/${encodeURIComponent(number)}/${action}`, {}),
+  startPayment: (amountMinor: number, reference: string) => http<{ id: string; url: string }>("POST", "/v1/portal/payments", { amountMinor, reference }),
+  payment: (id: string) => http<{ id: string; status: string; amountMinor: number; currency: string; reference: string; provider: string; method: string | null }>("GET", `/v1/portal/payments/${id}`),
+  demoComplete: (id: string, method: "card" | "bacs_debit", cancel?: boolean) => http<{ status: string }>("POST", `/v1/portal/payments/${id}/demo-complete`, { method, cancel }),
 };
 
 export interface Me {

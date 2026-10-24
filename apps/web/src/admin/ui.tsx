@@ -40,6 +40,7 @@ const tones: Record<string, string> = {
 };
 const statusTone: Record<string, [string, keyof typeof tones]> = {
   PENDING_APPROVAL: ["Pending approval", "warn"],
+  AWAITING_BUYER_APPROVAL: ["With customer's approver", "muted"],
   APPROVED: ["Approved", "ok"],
   REJECTED: ["Rejected", "danger"],
   SUSPENDED: ["Suspended", "danger"],
@@ -187,6 +188,9 @@ const friendly: Record<string, string> = {
   CANNOT_CHANGE_SELF: "You can't change your own access.",
   TIER_EXISTS: "A tier with that name already exists.",
   REP_NOT_FOUND: "Choose an active account manager.",
+  BARCODE_IN_USE: "Another product already uses that barcode.",
+  WAREHOUSE_EXISTS: "A branch with that code already exists.",
+  MAIL_FAILED: "The email could not be sent. Check SMTP_URL and MAIL_FROM.",
   BAD_REQUEST: "Check the highlighted values and try again.",
 };
 export const errorMessage = (e: unknown) => {

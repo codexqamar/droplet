@@ -17,6 +17,16 @@ services:
       DROPLET_SIGNING_SECRET: ${DROPLET_SIGNING_SECRET:?set DROPLET_SIGNING_SECRET}
       DROPLET_MFA_ENC_KEY: ${DROPLET_MFA_ENC_KEY:?set DROPLET_MFA_ENC_KEY (64 hex chars)}
       DROPLET_OPS_TOKEN: ${DROPLET_OPS_TOKEN:-}
+      # Email (invitations, order updates, security alerts). Unset = server log only.
+      SMTP_URL: ${SMTP_URL:-}
+      MAIL_FROM: ${MAIL_FROM:-}
+      # Online payments: Stripe Checkout (card, Bacs Direct Debit).
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+      STRIPE_PAYMENT_METHODS: ${STRIPE_PAYMENT_METHODS:-card}
+      # Demo installs only: "Load demo data" in Settings + simulated checkout. Never on a live install.
+      DROPLET_DEMO: ${DROPLET_DEMO:-}
+      DEMO_PASSWORD: ${DEMO_PASSWORD:-}
       RUN_SWEEPER: "1"
     volumes:
       - releases:/data/releases

@@ -7,8 +7,16 @@ import { HttpError, requireStaff, type SessionContext } from "../auth.js";
 import { businessProfile, createInvite, notify } from "../onboarding.js";
 import { applySecurityEvent } from "../security/tripwire.js";
 import { catalogueFor } from "../portalData.js";
-import { createOrder } from "../orders.js";
+import { createOrder, emitOrder } from "../orders.js";
 import type { SecurityState } from "../security/stateMachine.js";
+import { defaultWarehouse, nextSyncVersion, setStock, bumpProducts } from "../stock.js";
+import { emit, deliverWebhook } from "../webhooks.js";
+import { mailStatus, sendMail } from "../mail.js";
+import { paymentsConfig } from "../payments.js";
+import { config } from "../config.js";
+import { randomToken, sha256Hex } from "../lib/crypto.js";
+import { ProductUpsert, upsertProducts } from "./integration.js";
+import { loadDemoData } from "../demo.js";
 
 /**
  * Admin portal API. ADMIN sees and manages everything; SALES_REP sees only assigned trade
@@ -33,15 +41,6 @@ async function assertAccountAccess(ctx: SessionContext, tradeAccountId: string) 
 const audit = (tx: Tx | typeof prisma, ctx: SessionContext, req: FastifyRequest, action: string, target?: string, accountId?: string | null, meta?: object) =>
   tx.auditLog.create({ data: { actorId: ctx.user.id, actorRole: ctx.user.role, accountId: accountId ?? null, action, target: target ?? null, meta: meta ?? undefined, ip: req.ip } });
 
-/** Global monotonic version used by desktop delta sync. */
-async function nextSyncVersion(tx: Tx): Promise<bigint> {
-  const row = await tx.syncSequence.upsert({ where: { id: 1 }, create: { id: 1, value: 1n }, update: { value: { increment: 1n } } });
-  return row.value;
-}
-async function bumpProducts(tx: Tx, productIds: string[]) {
-  for (const id of productIds) await tx.product.update({ where: { id }, data: { syncVersion: await nextSyncVersion(tx) } });
-}
-
 async function defaultCatalogue(tx: Tx) {
   return (await tx.catalogue.findFirst({ orderBy: { updatedAt: "asc" } })) ?? tx.catalogue.create({ data: { name: "Main catalogue" } });
 }
@@ -53,6 +52,77 @@ const orderFlow: Partial<Record<OrderStatus, OrderStatus[]>> = {
   PART_SHIPPED: ["SHIPPED"],
   SHIPPED: ["INVOICED"],
 };
+
+/**
+ * One path for order status changes from the admin portal and the integration API: transition
+ * rules, shipment tracking, invoice posting, audit, customer email and integration webhooks.
+ */
+export async function applyOrderStatus(args: {
+  number: string;
+  status: OrderStatus;
+  actorId: string;
+  actorRole: Role;
+  ip?: string;
+  carrier?: string;
+  trackingNumber?: string;
+  trackingUrl?: string;
+  /** Staff scope check (reps only see assigned accounts). */
+  assertAccess?: (tradeAccountId: string) => Promise<unknown>;
+}) {
+  const result = await prisma.$transaction(async (tx) => {
+    const o = await tx.order.findUnique({ where: { number: args.number }, include: { tradeAccount: true, placedBy: true } });
+    if (!o) throw new HttpError(404, "ORDER_NOT_FOUND");
+    if (args.assertAccess) await args.assertAccess(o.tradeAccountId);
+    if (!(orderFlow[o.status] ?? []).includes(args.status)) throw new HttpError(409, "INVALID_TRANSITION", `${o.status} → ${args.status}`);
+    const shipping = args.status === "SHIPPED" || args.status === "PART_SHIPPED";
+    const updated = await tx.order.update({
+      where: { id: o.id },
+      data: {
+        status: args.status,
+        version: { increment: 1 },
+        ...(o.status === "PENDING_APPROVAL" && args.status === "SUBMITTED" ? { approvedById: args.actorId } : {}),
+        ...(shipping
+          ? { shippedAt: new Date(), carrier: args.carrier?.trim() || o.carrier, trackingNumber: args.trackingNumber?.trim() || o.trackingNumber, trackingUrl: args.trackingUrl?.trim() || o.trackingUrl }
+          : {}),
+      },
+    });
+    let invoice: { reference: string; amountMinor: bigint; dueAt: Date } | null = null;
+    if (args.status === "INVOICED") {
+      invoice = { reference: `INV-${o.number.slice(-8)}`, amountMinor: o.totalMinor, dueAt: new Date(Date.now() + o.tradeAccount.paymentTermsDays * 86_400_000) };
+      await tx.ledgerEntry.create({ data: { tradeAccountId: o.tradeAccountId, kind: "INVOICE", ...invoice } });
+    }
+    await tx.auditLog.create({
+      data: {
+        actorId: args.actorId,
+        actorRole: args.actorRole,
+        accountId: o.tradeAccountId,
+        action: `order.${args.status.toLowerCase()}`,
+        target: o.number,
+        ip: args.ip ?? null,
+        meta: shipping && updated.trackingNumber ? { carrier: updated.carrier, trackingNumber: updated.trackingNumber } : undefined,
+      },
+    });
+    return { order: updated, account: o.tradeAccount, email: o.placedBy.email, name: o.placedBy.fullName, invoice };
+  });
+  const { order, account, invoice } = result;
+  const shipped = args.status === "SHIPPED" || args.status === "PART_SHIPPED";
+  const tracking = shipped && order.trackingNumber ? ` Tracking: ${order.carrier ? `${order.carrier} ` : ""}${order.trackingNumber}${order.trackingUrl ? ` (${order.trackingUrl})` : ""}.` : "";
+  await notify(result.email, `Order ${order.number} update`, [`Hello ${result.name},`, "", `Order ${order.number} is now: ${args.status.replace(/_/g, " ").toLowerCase()}.${tracking}`]);
+  emitOrder(order, "order.status");
+  if (invoice) emit("invoice.created", { reference: invoice.reference, order: order.number, account: account.code, currency: account.currency, amountMinor: Number(invoice.amountMinor), dueAt: invoice.dueAt.toISOString() });
+  return order;
+}
+
+/** CSV cell escaping (RFC 4180) plus a formula-injection guard for spreadsheet apps. */
+function csvCell(v: unknown): string {
+  let s = v === null || v === undefined ? "" : String(v);
+  if (typeof v === "string" && /^[=+\-@\t\r]/.test(s)) s = `'${s}`;
+  return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+const csv = (rows: unknown[][]) => rows.map((r) => r.map(csvCell).join(",")).join("\r\n") + "\r\n";
+const money2 = (minor: bigint | number) => (Number(minor) / 100).toFixed(2);
+const ymd = (d: Date) => d.toISOString().slice(0, 10);
+const dmy = (d: Date) => `${String(d.getUTCDate()).padStart(2, "0")}/${String(d.getUTCMonth() + 1).padStart(2, "0")}/${d.getUTCFullYear()}`;
 
 function accountRow(a: Prisma.TradeAccountGetPayload<{ include: { priceTier: true; reps: { include: { rep: true } }; users: true; _count: { select: { orders: true } } } }>, balance: number) {
   const owner = a.users.find((u) => u.isAccountOwner) ?? a.users[0];
@@ -68,6 +138,7 @@ function accountRow(a: Prisma.TradeAccountGetPayload<{ include: { priceTier: tru
     priceTierId: a.priceTierId,
     creditLimitMinor: n(a.creditLimitMinor),
     paymentTermsDays: a.paymentTermsDays,
+    poRequired: a.poRequired,
     currency: a.currency,
     balanceMinor: balance,
     rep: a.reps[0] ? { id: a.reps[0].rep.id, name: a.reps[0].rep.fullName } : null,
@@ -138,16 +209,18 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
     const ctx = await requireStaff(req);
     await assertAccountAccess(ctx, req.params.id);
     const a = await prisma.tradeAccount.findUniqueOrThrow({ where: { id: req.params.id }, include: accountInclude });
-    const [bal, prices, ledger, devices, invites] = await Promise.all([
+    const [bal, prices, ledger, devices, invites, payments] = await Promise.all([
       balances([a.id]),
       prisma.accountPrice.findMany({ where: { tradeAccountId: a.id }, include: { product: true }, orderBy: [{ product: { sku: "asc" } }, { minQty: "asc" }] }),
       prisma.ledgerEntry.findMany({ where: { tradeAccountId: a.id }, orderBy: { postedAt: "desc" }, take: 50 }),
       prisma.device.findMany({ where: { user: { tradeAccountId: a.id } }, include: { user: true, release: true }, orderBy: { createdAt: "desc" } }),
       prisma.invite.findMany({ where: { tradeAccountId: a.id, acceptedAt: null, revokedAt: null, expiresAt: { gt: new Date() } } }),
+      prisma.payment.findMany({ where: { tradeAccountId: a.id }, orderBy: { createdAt: "desc" }, take: 20 }),
     ]);
     return {
       account: accountRow(a, bal.get(a.id) ?? 0),
-      users: a.users.map((u) => ({ id: u.id, name: u.fullName, email: u.email, owner: u.isAccountOwner, active: u.active, lastLoginAt: u.lastLoginAt?.toISOString() ?? null })),
+      users: a.users.map((u) => ({ id: u.id, name: u.fullName, email: u.email, owner: u.isAccountOwner, canApprove: u.isAccountOwner || u.canApproveOrders, spendLimitMinor: u.spendLimitMinor === null ? null : n(u.spendLimitMinor), active: u.active, lastLoginAt: u.lastLoginAt?.toISOString() ?? null })),
+      payments: payments.map((p) => ({ id: p.id, amountMinor: n(p.amountMinor), reference: p.reference, provider: p.provider, method: p.method, status: p.status, at: (p.completedAt ?? p.createdAt).toISOString() })),
       pendingInvites: invites.map((i) => ({ id: i.id, email: i.email, expiresAt: i.expiresAt.toISOString() })),
       prices: prices.map((p) => ({ id: p.id, sku: p.product.sku, name: p.product.name, minQty: p.minQty, unitMinor: n(p.unitMinor), listMinor: n(p.product.listMinor), validTo: p.validTo?.toISOString() ?? null })),
       ledger: ledger.map((l) => ({ id: l.id, kind: l.kind, reference: l.reference, amountMinor: n(l.amountMinor), postedAt: l.postedAt.toISOString(), dueAt: l.dueAt?.toISOString() ?? null })),
@@ -162,6 +235,7 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
     repId: z.string().uuid().nullable().optional(),
     legalName: z.string().trim().min(2).max(160).optional(),
     phone: z.string().trim().max(40).nullable().optional(),
+    poRequired: z.boolean().optional(),
   });
 
   async function applyTerms(tx: Tx, id: string, t: z.infer<typeof Terms>) {
@@ -173,6 +247,7 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
         ...(t.paymentTermsDays !== undefined ? { paymentTermsDays: t.paymentTermsDays } : {}),
         ...(t.legalName !== undefined ? { legalName: t.legalName } : {}),
         ...(t.phone !== undefined ? { phone: t.phone } : {}),
+        ...(t.poRequired !== undefined ? { poRequired: t.poRequired } : {}),
       },
     });
     if (t.repId !== undefined) {
@@ -371,6 +446,7 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
     const { order, status } = await prisma.$transaction((tx) =>
       createOrder(tx, { tradeAccountId: a.id, userId: ctx.user.id, channel: "REP", lines: body.lines, submit: body.mode === "submit", poNumber: body.poNumber }),
     );
+    emitOrder(order);
     if (body.mode === "submit") {
       const buyers = await prisma.user.findMany({ where: { tradeAccountId: a.id, active: true } });
       for (const u of buyers) {
@@ -412,6 +488,7 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
         totalMinor: n(o.totalMinor),
         currency: o.tradeAccount.currency,
         next: orderFlow[o.status] ?? [],
+        tracking: o.trackingNumber || o.carrier ? { carrier: o.carrier, number: o.trackingNumber, url: o.trackingUrl, shippedAt: o.shippedAt?.toISOString() ?? null } : null,
         lines: o.lines.map((l) => ({ sku: l.product.sku, name: l.product.name, qty: l.qty, unitMinor: n(l.unitMinor), lineMinor: n(l.lineMinor), source: l.priceSource })),
       })),
     };
@@ -419,25 +496,15 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
 
   app.post<{ Params: { number: string } }>("/v1/admin/orders/:number/status", async (req) => {
     const ctx = await requireStaff(req);
-    const { status } = z.object({ status: z.enum(["SUBMITTED", "CONFIRMED", "PART_SHIPPED", "SHIPPED", "INVOICED", "CANCELLED"]) }).parse(req.body);
-    const order = await prisma.$transaction(async (tx) => {
-      const o = await tx.order.findUnique({ where: { number: req.params.number }, include: { tradeAccount: true, placedBy: true } });
-      if (!o) throw new HttpError(404, "ORDER_NOT_FOUND");
-      await assertAccountAccess(ctx, o.tradeAccountId);
-      if (!(orderFlow[o.status] ?? []).includes(status)) throw new HttpError(409, "INVALID_TRANSITION", `${o.status} → ${status}`);
-      const updated = await tx.order.update({
-        where: { id: o.id },
-        data: { status, version: { increment: 1 }, ...(o.status === "PENDING_APPROVAL" && status === "SUBMITTED" ? { approvedById: ctx.user.id } : {}) },
-      });
-      if (status === "INVOICED") {
-        await tx.ledgerEntry.create({
-          data: { tradeAccountId: o.tradeAccountId, kind: "INVOICE", reference: `INV-${o.number.slice(-8)}`, amountMinor: o.totalMinor, dueAt: new Date(Date.now() + o.tradeAccount.paymentTermsDays * 86_400_000) },
-        });
-      }
-      await audit(tx, ctx, req, `order.${status.toLowerCase()}`, o.number, o.tradeAccountId);
-      return { ...updated, email: o.placedBy.email, name: o.placedBy.fullName };
-    });
-    await notify(order.email, `Order ${order.number} update`, [`Hello ${order.name},`, "", `Order ${order.number} is now: ${status.replace(/_/g, " ").toLowerCase()}.`]);
+    const body = z
+      .object({
+        status: z.enum(["SUBMITTED", "CONFIRMED", "PART_SHIPPED", "SHIPPED", "INVOICED", "CANCELLED"]),
+        carrier: z.string().trim().max(60).optional(),
+        trackingNumber: z.string().trim().max(80).optional(),
+        trackingUrl: z.union([z.string().trim().url().max(500), z.literal("")]).optional(),
+      })
+      .parse(req.body);
+    await applyOrderStatus({ number: req.params.number, actorId: ctx.user.id, actorRole: ctx.user.role, ip: req.ip, ...body, trackingUrl: body.trackingUrl || undefined, assertAccess: (id) => assertAccountAccess(ctx, id) });
     return { ok: true };
   });
 
@@ -506,10 +573,12 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
   app.get("/v1/admin/products", async (req) => {
     await requireStaff(req);
     const [products, tiers] = await Promise.all([
-      prisma.product.findMany({ include: { tierPrices: true }, orderBy: { sku: "asc" } }),
+      prisma.product.findMany({ include: { tierPrices: true, stockLevels: true }, orderBy: { sku: "asc" } }),
       prisma.priceTier.findMany({ orderBy: { name: "asc" }, include: { _count: { select: { accounts: true } } } }),
     ]);
+    const warehouses = await prisma.warehouse.findMany({ orderBy: [{ sortOrder: "asc" }, { name: "asc" }] });
     return {
+      warehouses: warehouses.map((w) => ({ id: w.id, code: w.code, name: w.name, active: w.active })),
       tiers: tiers.map((t) => ({ id: t.id, name: t.name, accounts: t._count.accounts })),
       products: products.map((p) => ({
         id: p.id,
@@ -520,6 +589,9 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
         packSize: p.packSize,
         listMinor: n(p.listMinor),
         stock: p.stockQty,
+        barcode: p.barcode,
+        leadTimeDays: p.leadTimeDays,
+        levels: p.stockLevels.map((l) => ({ warehouseId: l.warehouseId, qty: l.qty })),
         active: p.active,
         tierPrices: p.tierPrices.map((t) => ({ tierId: t.tierId, minQty: t.minQty, unitMinor: n(t.unitMinor) })),
       })),
@@ -534,6 +606,8 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
     packSize: z.number().int().min(1).max(100000).default(1),
     listMinor: Money,
     stock: z.number().int().min(0).max(100_000_000).default(0),
+    barcode: z.string().trim().max(32).nullable().optional(),
+    leadTimeDays: z.number().int().min(0).max(365).default(0),
     active: z.boolean().default(true),
   });
 
@@ -542,12 +616,14 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
     const b = ProductBody.parse(req.body);
     const sku = b.sku.toUpperCase();
     if (await prisma.product.findUnique({ where: { sku } })) throw new HttpError(409, "SKU_EXISTS");
+    if (b.barcode && (await prisma.product.findUnique({ where: { barcode: b.barcode } }))) throw new HttpError(409, "BARCODE_IN_USE");
     const product = await prisma.$transaction(async (tx) => {
       const cat = await defaultCatalogue(tx);
       const p = await tx.product.create({
-        data: { sku, name: b.name, description: b.description ?? null, uom: b.uom.toUpperCase(), packSize: b.packSize, listMinor: BigInt(b.listMinor), stockQty: b.stock, active: b.active, syncVersion: await nextSyncVersion(tx) },
+        data: { sku, name: b.name, description: b.description ?? null, uom: b.uom.toUpperCase(), packSize: b.packSize, listMinor: BigInt(b.listMinor), stockQty: b.stock, barcode: b.barcode || null, leadTimeDays: b.leadTimeDays, active: b.active, syncVersion: await nextSyncVersion(tx) },
       });
       await tx.catalogueProduct.create({ data: { catalogueId: cat.id, productId: p.id } });
+      await setStock(tx, p.id, [{ warehouseId: (await defaultWarehouse(tx)).id, qty: b.stock }]);
       await audit(tx, ctx, req, "product.create", sku);
       return p;
     });
@@ -556,7 +632,8 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
 
   app.patch<{ Params: { id: string } }>("/v1/admin/products/:id", async (req) => {
     const ctx = await requireStaff(req, { admin: true });
-    const b = ProductBody.partial().omit({ sku: true }).parse(req.body);
+    const b = ProductBody.partial().omit({ sku: true, stock: true }).parse(req.body);
+    if (b.barcode && (await prisma.product.findFirst({ where: { barcode: b.barcode, id: { not: req.params.id } } }))) throw new HttpError(409, "BARCODE_IN_USE");
     await prisma.$transaction(async (tx) => {
       const p = await tx.product.update({
         where: { id: req.params.id },
@@ -566,12 +643,71 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
           ...(b.uom !== undefined ? { uom: b.uom.toUpperCase() } : {}),
           ...(b.packSize !== undefined ? { packSize: b.packSize } : {}),
           ...(b.listMinor !== undefined ? { listMinor: BigInt(b.listMinor) } : {}),
-          ...(b.stock !== undefined ? { stockQty: b.stock } : {}),
+          ...(b.barcode !== undefined ? { barcode: b.barcode || null } : {}),
+          ...(b.leadTimeDays !== undefined ? { leadTimeDays: b.leadTimeDays } : {}),
           ...(b.active !== undefined ? { active: b.active } : {}),
           syncVersion: await nextSyncVersion(tx),
         },
       });
       await audit(tx, ctx, req, "product.update", p.sku, null, b);
+    });
+    return { ok: true };
+  });
+
+  /** Stock per warehouse for one product; the product total follows. */
+  app.put<{ Params: { id: string } }>("/v1/admin/products/:id/stock", async (req) => {
+    const ctx = await requireStaff(req, { admin: true });
+    const body = z.object({ levels: z.array(z.object({ warehouseId: z.string().uuid(), qty: z.number().int().min(0).max(100_000_000) })).min(1).max(100) }).parse(req.body);
+    const total = await prisma.$transaction(async (tx) => {
+      const p = await tx.product.findUniqueOrThrow({ where: { id: req.params.id } });
+      const t = await setStock(tx, p.id, body.levels);
+      await audit(tx, ctx, req, "stock.set", p.sku, null, { levels: body.levels, total: t });
+      return t;
+    });
+    return { ok: true, stock: total };
+  });
+
+  /** Bulk import / update from a CSV the browser has parsed (same rules as the integration API). */
+  app.post("/v1/admin/products/import", async (req) => {
+    const ctx = await requireStaff(req, { admin: true });
+    const rows = z.array(ProductUpsert).min(1).max(5000).parse(req.body);
+    const result = await upsertProducts(rows);
+    await audit(prisma, ctx, req, "product.import", undefined, null, { rows: rows.length, created: result.created, updated: result.updated, errors: result.errors.length });
+    return result;
+  });
+
+  // ───────────── warehouses / branches ─────────────
+  app.get("/v1/admin/warehouses", async (req) => {
+    await requireStaff(req);
+    const rows = await prisma.warehouse.findMany({ orderBy: [{ sortOrder: "asc" }, { name: "asc" }], include: { levels: { select: { qty: true } } } });
+    return { warehouses: rows.map((w) => ({ id: w.id, code: w.code, name: w.name, active: w.active, sortOrder: w.sortOrder, units: w.levels.reduce((s, l) => s + l.qty, 0), skus: w.levels.filter((l) => l.qty > 0).length })) };
+  });
+
+  app.post("/v1/admin/warehouses", async (req) => {
+    const ctx = await requireStaff(req, { admin: true });
+    const b = z.object({ code: z.string().trim().min(1).max(12).regex(/^[A-Za-z0-9-]+$/), name: z.string().trim().min(2).max(80) }).parse(req.body);
+    const code = b.code.toUpperCase();
+    if (await prisma.warehouse.findUnique({ where: { code } })) throw new HttpError(409, "WAREHOUSE_EXISTS");
+    const max = await prisma.warehouse.aggregate({ _max: { sortOrder: true } });
+    const w = await prisma.warehouse.create({ data: { code, name: b.name, sortOrder: (max._max.sortOrder ?? 0) + 1 } });
+    await audit(prisma, ctx, req, "warehouse.create", code);
+    return { id: w.id };
+  });
+
+  app.patch<{ Params: { id: string } }>("/v1/admin/warehouses/:id", async (req) => {
+    const ctx = await requireStaff(req, { admin: true });
+    const b = z.object({ name: z.string().trim().min(2).max(80).optional(), active: z.boolean().optional() }).parse(req.body);
+    await prisma.$transaction(async (tx) => {
+      const w = await tx.warehouse.update({ where: { id: req.params.id }, data: b });
+      if (b.active !== undefined) {
+        // Product totals only count active locations.
+        const ids = (await tx.stockLevel.findMany({ where: { warehouseId: w.id }, select: { productId: true } })).map((l) => l.productId);
+        for (const productId of ids) {
+          const total = (await tx.stockLevel.aggregate({ where: { productId, warehouse: { active: true } }, _sum: { qty: true } }))._sum.qty ?? 0;
+          await tx.product.update({ where: { id: productId }, data: { stockQty: total, syncVersion: await nextSyncVersion(tx) } });
+        }
+      }
+      await audit(tx, ctx, req, "warehouse.update", w.code, null, b);
     });
     return { ok: true };
   });
@@ -661,6 +797,24 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
     });
   }
 
+  /** Buyer-side controls for a trade account user (approver flag and personal spend limit). */
+  app.patch<{ Params: { id: string } }>("/v1/admin/users/:id/buyer", async (req) => {
+    const ctx = await requireStaff(req);
+    const b = z.object({ canApprove: z.boolean().optional(), spendLimitMinor: Money.nullable().optional() }).parse(req.body);
+    const u = await prisma.user.findUniqueOrThrow({ where: { id: req.params.id } });
+    if (!u.tradeAccountId) throw new HttpError(409, "NOT_A_BUYER");
+    await assertAccountAccess(ctx, u.tradeAccountId);
+    await prisma.user.update({
+      where: { id: u.id },
+      data: {
+        ...(b.canApprove !== undefined ? { canApproveOrders: b.canApprove } : {}),
+        ...(b.spendLimitMinor !== undefined ? { spendLimitMinor: b.spendLimitMinor === null ? null : BigInt(b.spendLimitMinor) } : {}),
+      },
+    });
+    await audit(prisma, ctx, req, "account.user_update", u.email, u.tradeAccountId, b);
+    return { ok: true };
+  });
+
   /** Lost authenticator: remove the user's 2-step factors and sign them out everywhere. They
    *  sign in to the web portal with their password and set up a new authenticator. */
   app.post<{ Params: { id: string } }>("/v1/admin/users/:id/reset-mfa", async (req) => {
@@ -689,6 +843,9 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
       devices: devices.map((d) => ({ id: d.id, label: d.label, user: d.user.fullName, account: d.user.tradeAccount?.legalName ?? "Staff", status: d.status, version: d.release?.version ?? "unknown", lastAttestedAt: d.lastAttestedAt?.toISOString() ?? null, createdAt: d.createdAt.toISOString() })),
       incidents: incidents.map((i) => ({ id: i.id, account: { id: i.tradeAccountId, name: i.tradeAccount.legalName, state: i.tradeAccount.securityState }, kind: i.kind, openedAt: i.openedAt.toISOString(), resolvedAt: i.resolvedAt?.toISOString() ?? null })),
       releases: releases.map((r) => ({ id: r.id, buildId: r.buildId, version: r.version, platform: r.platform, publishedAt: r.publishedAt.toISOString(), revokedAt: r.revokedAt?.toISOString() ?? null, devices: r._count.devices })),
+      // Lets an admin confirm the backed-up DROPLET_MFA_ENC_KEY matches the running server
+      // without revealing the key (first 16 hex characters of its sha256).
+      mfaKeyFingerprint: sha256Hex(config.mfaEncKeyHex).slice(0, 16),
     };
   });
 
@@ -709,11 +866,128 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
     return { ok: true };
   });
 
+  // ───────────── integrations: API keys, webhook, email, payments ─────────────
+  app.get("/v1/admin/integrations", async (req) => {
+    await requireStaff(req, { admin: true });
+    const [keys, profile] = await Promise.all([prisma.apiKey.findMany({ where: { revokedAt: null }, orderBy: { createdAt: "desc" } }), businessProfile()]);
+    return {
+      apiKeys: keys.map((k) => ({ id: k.id, name: k.name, prefix: k.prefix, createdAt: k.createdAt.toISOString(), lastUsedAt: k.lastUsedAt?.toISOString() ?? null })),
+      webhook: { url: profile.webhookUrl, configured: !!profile.webhookUrl },
+      mail: mailStatus(),
+      payments: paymentsConfig(),
+      apiBase: `${config.publicBaseUrl}/v1/integration`,
+    };
+  });
+
+  app.post("/v1/admin/integrations/keys", async (req) => {
+    const ctx = await requireStaff(req, { admin: true });
+    const { name } = z.object({ name: z.string().trim().min(2).max(60) }).parse(req.body);
+    const token = `dlk_${randomToken(32)}`;
+    const key = await prisma.apiKey.create({ data: { name, prefix: token.slice(0, 10), tokenHash: sha256Hex(token), createdById: ctx.user.id } });
+    await audit(prisma, ctx, req, "integration.key_create", name);
+    // Shown once; only the hash is stored.
+    return { id: key.id, token };
+  });
+
+  app.delete<{ Params: { id: string } }>("/v1/admin/integrations/keys/:id", async (req) => {
+    const ctx = await requireStaff(req, { admin: true });
+    const k = await prisma.apiKey.update({ where: { id: req.params.id }, data: { revokedAt: new Date() } });
+    await audit(prisma, ctx, req, "integration.key_revoke", k.name);
+    return { ok: true };
+  });
+
+  app.put("/v1/admin/integrations/webhook", async (req) => {
+    const ctx = await requireStaff(req, { admin: true });
+    const { url } = z
+      .object({ url: z.string().trim().url().max(500).refine((u) => u.startsWith("https://") || !config.portalOrigin.startsWith("https://"), "Use an https:// address").nullable() })
+      .parse(req.body);
+    await businessProfile();
+    const secret = url ? `whsec_${randomToken(24)}` : null;
+    await prisma.businessProfile.update({ where: { id: 1 }, data: { webhookUrl: url, webhookSecret: secret } });
+    await audit(prisma, ctx, req, url ? "integration.webhook_set" : "integration.webhook_clear", url ?? undefined);
+    // The signing secret is shown once so the receiver can verify X-Droplet-Signature.
+    return { ok: true, secret };
+  });
+
+  app.post("/v1/admin/integrations/webhook/test", async (req) => {
+    await requireStaff(req, { admin: true });
+    return deliverWebhook("test", { message: "DROPLET webhook test", business: (await businessProfile()).name });
+  });
+
+  app.post("/v1/admin/integrations/mail/test", async (req) => {
+    const ctx = await requireStaff(req, { admin: true });
+    const profile = await businessProfile();
+    try {
+      await sendMail({ to: ctx.user.email, subject: `[${profile.name}] Test email`, text: `This is a test email from ${profile.name}'s DROPLET portal. If you can read this, email delivery works.` });
+      return { ok: true, mode: mailStatus().mode, to: ctx.user.email };
+    } catch (e) {
+      throw new HttpError(502, "MAIL_FAILED", (e as Error).message);
+    }
+  });
+
+  /**
+   * Accounting exports. `xero` follows Xero's sales invoice import template; `sage` follows the
+   * Sage 50 / Sage Accounting audit-trail transaction import (SI, SC, SA); `generic` is plain CSV.
+   */
+  app.get<{ Params: { kind: string }; Querystring: { format?: string; from?: string; to?: string } }>("/v1/admin/exports/:kind", async (req, reply) => {
+    await requireStaff(req, { admin: true });
+    const kind = req.params.kind.replace(/\.csv$/, "");
+    const format = req.query.format ?? "generic";
+    const from = req.query.from ? new Date(req.query.from) : new Date(Date.now() - 90 * 86_400_000);
+    const to = req.query.to ? new Date(`${req.query.to}T23:59:59.999Z`) : new Date();
+    if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) throw new HttpError(400, "BAD_DATE");
+    let rows: unknown[][];
+    if (kind === "invoices") {
+      const entries = await prisma.ledgerEntry.findMany({ where: { kind: { in: ["INVOICE", "CREDIT_NOTE"] }, postedAt: { gte: from, lte: to } }, include: { tradeAccount: true }, orderBy: { postedAt: "asc" } });
+      if (format === "xero") {
+        rows = [["*ContactName", "*InvoiceNumber", "Reference", "*InvoiceDate", "*DueDate", "*Description", "*Quantity", "*UnitAmount", "*AccountCode", "*TaxType", "Currency"]];
+        for (const e of entries) rows.push([e.tradeAccount.legalName, e.reference, e.tradeAccount.code, dmy(e.postedAt), dmy(e.dueAt ?? e.postedAt), e.kind === "INVOICE" ? `Trade order ${e.reference}` : `Credit note ${e.reference}`, 1, money2(e.amountMinor), "200", "No VAT", e.tradeAccount.currency]);
+      } else if (format === "sage") {
+        rows = [["Type", "Account Reference", "Nominal A/C Ref", "Date", "Reference", "Details", "Net Amount", "Tax Code", "Tax Amount"]];
+        for (const e of entries) rows.push([e.kind === "INVOICE" ? "SI" : "SC", e.tradeAccount.code, "4000", dmy(e.postedAt), e.reference, e.kind === "INVOICE" ? "Trade order" : "Credit note", money2(e.amountMinor < 0n ? -e.amountMinor : e.amountMinor), "T9", "0.00"]);
+      } else {
+        rows = [["reference", "kind", "account_code", "account_name", "currency", "amount", "posted", "due"]];
+        for (const e of entries) rows.push([e.reference, e.kind, e.tradeAccount.code, e.tradeAccount.legalName, e.tradeAccount.currency, money2(e.amountMinor), ymd(e.postedAt), e.dueAt ? ymd(e.dueAt) : ""]);
+      }
+    } else if (kind === "payments") {
+      const pays = await prisma.payment.findMany({ where: { status: "SUCCEEDED", completedAt: { gte: from, lte: to } }, include: { tradeAccount: true }, orderBy: { completedAt: "asc" } });
+      if (format === "sage") {
+        rows = [["Type", "Account Reference", "Nominal A/C Ref", "Date", "Reference", "Details", "Net Amount", "Tax Code", "Tax Amount"]];
+        for (const p of pays) rows.push(["SA", p.tradeAccount.code, "1200", dmy(p.completedAt!), `PAY-${p.id.slice(0, 8).toUpperCase()}`, p.reference, money2(p.amountMinor), "T9", "0.00"]);
+      } else {
+        rows = [["date", "reference", "account_code", "account_name", "currency", "amount", "method", "provider", "description"]];
+        for (const p of pays) rows.push([ymd(p.completedAt!), `PAY-${p.id.slice(0, 8).toUpperCase()}`, p.tradeAccount.code, p.tradeAccount.legalName, p.currency, money2(p.amountMinor), p.method ?? "", p.provider, p.reference]);
+      }
+    } else if (kind === "orders") {
+      const orders = await prisma.order.findMany({ where: { status: { not: "DRAFT" }, createdAt: { gte: from, lte: to } }, include: { tradeAccount: true, placedBy: true, lines: { include: { product: true } } }, orderBy: { createdAt: "asc" } });
+      rows = [["order", "date", "status", "channel", "account_code", "account_name", "po_number", "placed_by", "sku", "description", "qty", "unit_price", "line_total", "price_source", "carrier", "tracking"]];
+      for (const o of orders) for (const l of o.lines) rows.push([o.number, ymd(o.submittedAt ?? o.createdAt), o.status, o.channel, o.tradeAccount.code, o.tradeAccount.legalName, o.poNumber ?? "", o.placedBy.email, l.product.sku, l.product.name, l.qty, money2(l.unitMinor), money2(l.lineMinor), l.priceSource, o.carrier ?? "", o.trackingNumber ?? ""]);
+    } else if (kind === "products") {
+      const [products, warehouses] = await Promise.all([prisma.product.findMany({ include: { stockLevels: true }, orderBy: { sku: "asc" } }), prisma.warehouse.findMany({ orderBy: [{ sortOrder: "asc" }, { name: "asc" }] })]);
+      rows = [["sku", "name", "barcode", "uom", "pack_size", "list_price", "lead_time_days", "active", ...warehouses.map((w) => `stock_${w.code}`)]];
+      for (const p of products) rows.push([p.sku, p.name, p.barcode ?? "", p.uom, p.packSize, money2(p.listMinor), p.leadTimeDays, p.active ? "yes" : "no", ...warehouses.map((w) => p.stockLevels.find((l) => l.warehouseId === w.id)?.qty ?? 0)]);
+    } else {
+      throw new HttpError(404, "UNKNOWN_EXPORT");
+    }
+    const name = `droplet-${kind}${format !== "generic" ? `-${format}` : ""}-${ymd(new Date())}.csv`;
+    void reply.header("content-type", "text/csv; charset=utf-8").header("content-disposition", `attachment; filename="${name}"`);
+    return "\uFEFF" + csv(rows);
+  });
+
   // ───────────── settings & audit ─────────────
   app.get("/v1/admin/settings", async (req) => {
     await requireStaff(req, { admin: true });
     const p = await businessProfile();
-    return { name: p.name, supportEmail: p.supportEmail, currency: p.currency };
+    return { name: p.name, supportEmail: p.supportEmail, currency: p.currency, demoMode: config.demoMode, demoLoaded: !!(await prisma.tradeAccount.findUnique({ where: { code: "ACC-10442" } })) };
+  });
+
+  /** Demo installs only (DROPLET_DEMO=1): adds the sample catalogue and trade accounts. */
+  app.post("/v1/admin/demo-data", async (req) => {
+    const ctx = await requireStaff(req, { admin: true });
+    if (!config.demoMode) throw new HttpError(404, "NOT_FOUND");
+    const r = await loadDemoData({ repId: ctx.user.id });
+    if (r.loaded) await audit(prisma, ctx, req, "demo.load");
+    return r;
   });
 
   app.patch("/v1/admin/settings", async (req) => {

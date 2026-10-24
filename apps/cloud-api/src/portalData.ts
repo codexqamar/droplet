@@ -1,5 +1,6 @@
 import type { Prisma, Role } from "@prisma/client";
 import { prisma, type Tx } from "./db.js";
+import { paymentsConfig } from "./payments.js";
 
 /**
  * Read models shared by the web portal (/v1/portal/dashboard) and the desktop snapshot
@@ -28,7 +29,7 @@ export async function catalogueFor(db: Tx | typeof prisma, tradeAccountId: strin
   });
   const ids = products.map((p) => p.id);
   const now = new Date();
-  const [contract, tier] = await Promise.all([
+  const [contract, tier, levels] = await Promise.all([
     db.accountPrice.findMany({
       where: { tradeAccountId, productId: { in: ids }, validFrom: { lte: now }, OR: [{ validTo: null }, { validTo: { gt: now } }] },
       orderBy: [{ minQty: "asc" }, { validFrom: "desc" }],
@@ -36,6 +37,7 @@ export async function catalogueFor(db: Tx | typeof prisma, tradeAccountId: strin
     account.priceTierId
       ? db.tierPrice.findMany({ where: { tierId: account.priceTierId, productId: { in: ids } }, orderBy: { minQty: "asc" } })
       : Promise.resolve([]),
+    stockByBranch(db, ids),
   ]);
 
   const group = <T extends { productId: string; minQty: number; unitMinor: bigint }>(rows: T[], source: PriceSource) => {
@@ -58,11 +60,30 @@ export async function catalogueFor(db: Tx | typeof prisma, tradeAccountId: strin
     packSize: p.packSize,
     listMinor: n(p.listMinor),
     stock: p.stockQty,
+    leadTimeDays: p.leadTimeDays,
+    barcode: p.barcode,
+    branches: levels.get(p.id) ?? [],
     active: p.active,
     syncVersion: p.syncVersion,
     // Contract prices replace the tier ladder entirely when present (that is the negotiation).
     breaks: contractBy.get(p.id) ?? tierBy.get(p.id) ?? [],
   }));
+}
+
+/** Per-warehouse availability for the given products (active warehouses only, display order). */
+export async function stockByBranch(db: Tx | typeof prisma, productIds: string[]) {
+  const rows = await db.stockLevel.findMany({
+    where: { productId: { in: productIds }, warehouse: { active: true } },
+    include: { warehouse: true },
+    orderBy: [{ warehouse: { sortOrder: "asc" } }, { warehouse: { name: "asc" } }],
+  });
+  const m = new Map<string, Array<{ code: string; name: string; qty: number }>>();
+  for (const r of rows) {
+    const list = m.get(r.productId) ?? [];
+    list.push({ code: r.warehouse.code, name: r.warehouse.name, qty: r.qty });
+    m.set(r.productId, list);
+  }
+  return m;
 }
 
 function initials(name: string): string {
@@ -111,7 +132,7 @@ export async function buildDashboard(tradeAccountId: string, userId: string) {
     prisma.order.findMany({
       where: { tradeAccountId },
       orderBy: { createdAt: "desc" },
-      take: 10,
+      take: 25,
       include: { placedBy: true, lines: { include: { product: { select: { sku: true } } } } },
     }),
     prisma.quote.findMany({
@@ -125,6 +146,7 @@ export async function buildDashboard(tradeAccountId: string, userId: string) {
       include: { release: true },
     }),
   ]);
+  const payments = await prisma.payment.findMany({ where: { tradeAccountId, status: { in: ["SUCCEEDED", "PENDING"] } }, orderBy: { createdAt: "desc" }, take: 5 });
 
   const handlerIds = quotes.map((q) => q.handledById).filter((x): x is string => !!x);
   const handlers = new Map(
@@ -140,8 +162,21 @@ export async function buildDashboard(tradeAccountId: string, userId: string) {
       tier: account.priceTier?.name ?? "Standard",
       currency: account.currency,
       securityState: account.securityState,
-      user: { name: user.fullName, email: user.email, role: user.role as Role, initials: initials(user.fullName) },
+      user: {
+        name: user.fullName,
+        email: user.email,
+        role: user.role as Role,
+        initials: initials(user.fullName),
+        owner: user.isAccountOwner,
+        canApprove: user.isAccountOwner || user.canApproveOrders,
+        spendLimitMinor: user.spendLimitMinor === null ? null : n(user.spendLimitMinor),
+      },
       rep: rep ? { name: rep.fullName, email: rep.email } : null,
+      poRequired: account.poRequired,
+    },
+    payments: {
+      ...paymentsConfig(),
+      recent: payments.map((p) => ({ id: p.id, amountMinor: n(p.amountMinor), reference: p.reference, status: p.status, method: p.method, at: (p.completedAt ?? p.createdAt).toISOString() })),
     },
     mfaEnabled: user.mfaFactors.length > 0,
     credit: {
@@ -160,6 +195,8 @@ export async function buildDashboard(tradeAccountId: string, userId: string) {
       items: o.lines.map((l) => ({ sku: l.product.sku, qty: l.qty })),
       totalMinor: n(o.totalMinor),
       status: o.status,
+      placedById: o.placedById,
+      tracking: o.trackingNumber || o.carrier ? { carrier: o.carrier, number: o.trackingNumber, url: o.trackingUrl, shippedAt: o.shippedAt?.toISOString() ?? null } : null,
     })),
     quotes: quotes.map((q) => ({
       number: q.number,

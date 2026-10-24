@@ -36,6 +36,10 @@ model User {
   tradeAccountId String?      @db.Uuid // set for TRADE_CUSTOMER only
   tradeAccount   TradeAccount? @relation("AccountUsers", fields: [tradeAccountId], references: [id])
   isAccountOwner Boolean      @default(false) // receives security alerts for the trade account
+  /// Buyer-side controls on multi-user trade accounts. Owners and approvers can approve
+  /// colleagues' orders; a buyer's orders above their spend limit wait for that approval.
+  canApproveOrders Boolean    @default(false)
+  spendLimitMinor  BigInt?    // null = no personal limit
   active         Boolean      @default(true)  // deactivated users cannot sign in
   lastLoginAt    DateTime?
   notificationsSeenAt DateTime? // admin portal: events after this are unread
@@ -120,6 +124,7 @@ model TradeAccount {
   catalogue        Catalogue?      @relation(fields: [catalogueId], references: [id])
   creditLimitMinor BigInt          @default(0)
   paymentTermsDays Int             @default(30)
+  poRequired       Boolean         @default(false) // buyers must enter a PO number at checkout
   currency         String          @default("GBP") @db.Char(3)
   users            User[]          @relation("AccountUsers")
   reps             RepAssignment[]
@@ -128,6 +133,8 @@ model TradeAccount {
   quotes           Quote[]
   ledger           LedgerEntry[]
   incidents        SecurityIncident[]
+  orderLists       OrderList[]
+  payments         Payment[]
   approvedAt       DateTime?
   createdAt        DateTime        @default(now())
   updatedAt        DateTime        @updatedAt
@@ -149,10 +156,14 @@ model Product {
   sku         String             @unique
   name        String
   description String?
+  barcode     String?            @unique // EAN/UPC/GTIN for scanning
   uom         String             @default("EA") // unit of measure
   packSize    Int                @default(1)
   listMinor   BigInt             // list price, minor units
-  stockQty    Int                @default(0)
+  stockQty    Int                @default(0) // total across warehouses (kept in step with StockLevel)
+  leadTimeDays Int               @default(0) // supplier lead time when out of stock
+  stockLevels StockLevel[]
+  listItems   OrderListItem[]
   active      Boolean            @default(true)
   catalogues  CatalogueProduct[]
   tierPrices  TierPrice[]
@@ -165,6 +176,28 @@ model Product {
   updatedAt   DateTime           @updatedAt
 
   @@index([syncVersion])
+}
+
+/// A stocking location (warehouse or trade counter branch).
+model Warehouse {
+  id        String       @id @default(uuid()) @db.Uuid
+  code      String       @unique
+  name      String
+  active    Boolean      @default(true)
+  sortOrder Int          @default(0)
+  levels    StockLevel[]
+  createdAt DateTime     @default(now())
+}
+
+model StockLevel {
+  warehouseId String    @db.Uuid
+  warehouse   Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
+  productId   String    @db.Uuid
+  product     Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+  qty         Int       @default(0)
+  updatedAt   DateTime  @updatedAt
+
+  @@id([warehouseId, productId])
 }
 
 model CatalogueProduct {
@@ -220,6 +253,7 @@ model AccountPrice {
 
 enum OrderStatus {
   DRAFT
+  AWAITING_BUYER_APPROVAL // over the buyer's own spend limit; an approver on the account signs off
   PENDING_APPROVAL
   SUBMITTED
   CONFIRMED
@@ -248,6 +282,11 @@ model Order {
   placedBy       User         @relation("OrderPlacedBy", fields: [placedById], references: [id])
   approvedById   String?      @db.Uuid
   approvedBy     User?        @relation("OrderApprovedBy", fields: [approvedById], references: [id])
+  buyerApprovedById String?   @db.Uuid
+  carrier        String?
+  trackingNumber String?
+  trackingUrl    String?
+  shippedAt      DateTime?
   sourceDeviceId String?      @db.Uuid
   quoteId        String?      @db.Uuid
   quote          Quote?       @relation(fields: [quoteId], references: [id])
@@ -331,6 +370,71 @@ model LedgerEntry {
   postedAt       DateTime     @default(now())
 
   @@index([tradeAccountId, postedAt])
+}
+
+/// Saved order list / template (per job, site or location) on a trade account.
+model OrderList {
+  id             String          @id @default(uuid()) @db.Uuid
+  tradeAccountId String          @db.Uuid
+  tradeAccount   TradeAccount    @relation(fields: [tradeAccountId], references: [id], onDelete: Cascade)
+  name           String
+  note           String?
+  createdById    String          @db.Uuid
+  items          OrderListItem[]
+  lastUsedAt     DateTime?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  @@index([tradeAccountId])
+}
+
+model OrderListItem {
+  listId    String    @db.Uuid
+  list      OrderList @relation(fields: [listId], references: [id], onDelete: Cascade)
+  productId String    @db.Uuid
+  product   Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+  qty       Int
+  sortOrder Int       @default(0)
+
+  @@id([listId, productId])
+}
+
+enum PaymentStatus {
+  PENDING
+  SUCCEEDED
+  FAILED
+  CANCELLED
+}
+
+/// Online payment of a statement balance or invoice (Stripe Checkout, or the demo provider).
+model Payment {
+  id             String        @id @default(uuid()) @db.Uuid
+  tradeAccountId String        @db.Uuid
+  tradeAccount   TradeAccount  @relation(fields: [tradeAccountId], references: [id])
+  amountMinor    BigInt
+  currency       String        @db.Char(3)
+  provider       String        // "stripe" | "demo"
+  method         String?       // "card" | "bacs_debit"
+  providerRef    String?       @unique // Stripe Checkout session id
+  reference      String        // what is being paid, e.g. "Statement balance" or an invoice ref
+  status         PaymentStatus @default(PENDING)
+  createdById    String        @db.Uuid
+  completedAt    DateTime?
+  createdAt      DateTime      @default(now())
+
+  @@index([tradeAccountId, createdAt])
+}
+
+/// Machine credential for accounting / ERP integrations. Only the sha256 is stored.
+model ApiKey {
+  id         String    @id @default(uuid()) @db.Uuid
+  name       String
+  prefix     String    // first characters, shown so admins can tell keys apart
+  tokenHash  String    @unique
+  createdById String   @db.Uuid
+  lastUsedAt DateTime?
+  revokedAt  DateTime?
+  createdAt  DateTime  @default(now())
 }
 
 // ───────────────────────────── Desktop distribution & device integrity ─────────────────────────────
@@ -502,6 +606,9 @@ model BusinessProfile {
   setupTokenHash      String?
   setupTokenExpiresAt DateTime?
   setupCompletedAt    DateTime?
+  /// Outbound integration webhook (accounting/ERP): order, invoice and payment events, HMAC signed.
+  webhookUrl          String?
+  webhookSecret       String?
   updatedAt           DateTime  @updatedAt
 }
 

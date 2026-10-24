@@ -1,3 +1,4 @@
+import nodemailer from "nodemailer";
 import { config } from "./config.js";
 
 export interface OutboundEmail {
@@ -7,14 +8,36 @@ export interface OutboundEmail {
 }
 
 /**
- * Transport seam. Production binds this to SES/Postmark; dev logs to stdout.
+ * Transport seam: SMTP when SMTP_URL is set (Postmark, SES, Resend, Mailgun, Microsoft 365 ...),
+ * otherwise the server log (development and demos).
  * Security mail must come from a DKIM/DMARC-aligned domain so users can trust the recovery link.
  */
 export type MailTransport = (msg: OutboundEmail) => Promise<void>;
 
-let transport: MailTransport = async (msg) => {
+const logTransport: MailTransport = async (msg) => {
   console.info(`[mail] to=${msg.to} subject="${msg.subject}"\n${msg.text}`);
 };
+
+function smtpTransport(url: string, from: string): MailTransport {
+  const mailer = nodemailer.createTransport(url);
+  return async (msg) => {
+    await mailer.sendMail({ from, to: msg.to, subject: msg.subject, text: msg.text });
+  };
+}
+
+let transport: MailTransport = config.smtpUrl ? smtpTransport(config.smtpUrl, config.mailFrom || "DROPLET <no-reply@localhost>") : logTransport;
+
+/** Shown in the admin portal under Integrations. */
+export function mailStatus(): { mode: "smtp" | "log"; from: string | null; host: string | null } {
+  if (!config.smtpUrl) return { mode: "log", from: null, host: null };
+  let host: string | null = null;
+  try {
+    host = new URL(config.smtpUrl).hostname;
+  } catch {
+    /* not a URL; leave blank */
+  }
+  return { mode: "smtp", from: config.mailFrom || null, host };
+}
 
 export const setMailTransport = (t: MailTransport): void => {
   transport = t;

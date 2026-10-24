@@ -17,7 +17,8 @@
     "register-release": "tsx --env-file=.env scripts/register-release.ts",
     "env:init": "node scripts/env-init.mjs",
     "setup-link": "tsx --env-file=.env scripts/setup-link.ts",
-    "db:demo": "tsx --env-file=.env prisma/seed.ts",
+    "db:demo": "tsx --env-file=.env scripts/demo-data.ts",
+    "demo-data:prod": "node dist/scripts/demo-data.js",
     "start:prod": "prisma migrate deploy && node dist/src/server.js",
     "setup-link:prod": "node dist/scripts/setup-link.js"
   },
@@ -25,11 +26,13 @@
     "@fastify/static": "7.0.4",
     "@prisma/client": "5.22.0",
     "fastify": "4.28.1",
+    "nodemailer": "6.9.16",
     "prisma": "5.22.0",
     "zod": "3.23.8"
   },
   "devDependencies": {
     "@types/node": "22.9.0",
+    "@types/nodemailer": "6.4.17",
     "embedded-postgres": "17.10.0-beta.17",
     "tsx": "4.19.2",
     "typescript": "5.6.3"

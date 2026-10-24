@@ -30,6 +30,8 @@ const NOTIFY_ACTIONS = [
   "security.lock",
   "invite.accept",
   "device.enroll",
+  "order.buyer_approve",
+  "payment.succeeded",
 ] as const;
 
 /** Which events a staff member sees: admins everything; account managers their accounts only. */
@@ -64,7 +66,13 @@ async function describe(rows: AuditLog[]): Promise<Notice[]> {
       case "order.rep":
         return meta.status === "PENDING_APPROVAL"
           ? { ...base, kind: "approval", title: "Order needs approval", body: `${account}: over the credit limit.`, link: "/admin/orders" }
-          : { ...base, kind: "order", title: meta.status === "DRAFT" ? "Draft order saved" : "New order", body: `${account} · ${actor}${r.action === "order.desktop" ? " (desktop)" : ""}.`, link: "/admin/orders" };
+          : meta.status === "AWAITING_BUYER_APPROVAL"
+            ? { ...base, kind: "order", title: "Order waiting on customer sign-off", body: `${account} · ${actor} is over their spending limit; their approver has been asked.`, link: "/admin/orders" }
+            : { ...base, kind: "order", title: meta.status === "DRAFT" ? "Draft order saved" : "New order", body: `${account} · ${actor}${r.action === "order.desktop" ? " (desktop)" : ""}.`, link: "/admin/orders" };
+      case "order.buyer_approve":
+        return { ...base, kind: "order", title: "Order approved by customer", body: `${account} · ${actor} approved ${r.target ?? "an order"}.`, link: "/admin/orders" };
+      case "payment.succeeded":
+        return { ...base, kind: "order", title: "Payment received", body: `${account} paid ${(((meta as { amountMinor?: number }).amountMinor ?? 0) / 100).toFixed(2)} online.`, link: "/admin/accounts" };
       case "quote.request":
         return { ...base, kind: "quote", title: "New quote request", body: `${account} · ${actor}.`, link: "/admin/quotes" };
       case "quote.accept":

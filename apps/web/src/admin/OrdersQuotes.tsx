@@ -1,8 +1,51 @@
-import { ChevronDown, FileText, Globe, Monitor, PackageCheck, UserRound } from "lucide-react";
+import { ChevronDown, FileText, Globe, Monitor, PackageCheck, Truck, UserRound } from "lucide-react";
 import { useState } from "react";
-import { admin, parseMoney, toMoneyInput, type AdminQuote, type OrderStatus } from "../lib/admin";
+import { admin, parseMoney, toMoneyInput, type AdminOrder, type AdminQuote, type OrderStatus } from "../lib/admin";
 import { money, relative, shortDate } from "../lib/format";
-import { Badge, EmptyState, ErrorText, inputCls, PageHeading, Panel, SearchBox, Segmented, useAction, useLoad } from "./ui";
+import { Badge, EmptyState, ErrorText, Field, inputCls, Modal, PageHeading, Panel, SearchBox, Segmented, useAction, useLoad } from "./ui";
+
+/** Common UK carriers with their public tracking page; the tracking number is appended. */
+const carriers: Array<[string, string]> = [
+  ["DPD", "https://track.dpd.co.uk/parcels/"],
+  ["Royal Mail", "https://www.royalmail.com/track-your-item#/tracking-results/"],
+  ["DHL", "https://www.dhl.com/gb-en/home/tracking.html?tracking-id="],
+  ["UPS", "https://www.ups.com/track?tracknum="],
+  ["Parcelforce", "https://www.parcelforce.com/track-trace?trackNumber="],
+  ["Evri", "https://www.evri.com/track/parcel/"],
+  ["Own delivery", ""],
+];
+
+function ShipDialog({ order, status, onClose, onDone }: { order: AdminOrder; status: "SHIPPED" | "PART_SHIPPED"; onClose: () => void; onDone: () => void }) {
+  const act = useAction();
+  const [carrier, setCarrier] = useState(order.tracking?.carrier ?? "DPD");
+  const [number, setNumber] = useState(order.tracking?.number ?? "");
+  const base = carriers.find(([c]) => c === carrier)?.[1] ?? "";
+  const [url, setUrl] = useState(order.tracking?.url ?? "");
+  const effectiveUrl = url || (base && number ? base + encodeURIComponent(number.trim()) : "");
+  return (
+    <Modal title={`${status === "SHIPPED" ? "Ship" : "Part ship"} ${order.number}`} onClose={onClose}>
+      <form className="space-y-3" onSubmit={(e) => {
+        e.preventDefault();
+        void act.run("ship", () => admin.setOrderStatus(order.number, status, { carrier: carrier.trim() || undefined, trackingNumber: number.trim() || undefined, trackingUrl: effectiveUrl || undefined })).then((ok) => ok && (onDone(), onClose()));
+      }}>
+        <p className="text-sm text-muted">The customer is emailed with the tracking details, and they appear on the order in the trade portal.</p>
+        <Field label="Carrier">
+          <input className={inputCls} list="carriers" value={carrier} onChange={(e) => setCarrier(e.target.value)} maxLength={60} />
+          <datalist id="carriers">{carriers.map(([c]) => <option key={c} value={c} />)}</datalist>
+        </Field>
+        <Field label="Tracking number (optional)"><input className={`${inputCls} font-mono`} value={number} onChange={(e) => setNumber(e.target.value)} maxLength={80} /></Field>
+        <Field label="Tracking link" hint={base ? "Filled in from the carrier; override if needed." : "Optional."}>
+          <input className={inputCls} type="url" value={url || effectiveUrl} onChange={(e) => setUrl(e.target.value)} placeholder="https://" maxLength={500} />
+        </Field>
+        <ErrorText error={act.error} />
+        <div className="flex justify-end gap-2">
+          <button type="button" className="btn-ghost" onClick={onClose}>Cancel</button>
+          <button className="btn-primary" disabled={!!act.busy}><Truck className="h-4 w-4" /> {act.busy ? "Saving…" : status === "SHIPPED" ? "Mark shipped" : "Mark part shipped"}</button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
 
 const actionLabel: Partial<Record<OrderStatus, string>> = {
   SUBMITTED: "Approve",
@@ -23,11 +66,12 @@ export function OrdersPage() {
   const list = useLoad(() => admin.orders(filter, q.trim() || undefined), [filter, q]);
   const all = useLoad(() => admin.orders("ALL"), []);
   const act = useAction();
+  const [shipping, setShipping] = useState<{ order: AdminOrder; status: "SHIPPED" | "PART_SHIPPED" } | null>(null);
   const count = (s: OrderStatus) => (all.data?.orders ?? []).filter((o) => o.status === s).length;
 
   return (
     <div className="space-y-5">
-      <PageHeading title="Orders" description="Approve over-credit orders, confirm, ship and invoice. Invoicing posts the amount to the customer's statement." />
+      <PageHeading title="Orders" description="Approve over-credit orders, confirm, ship with tracking and invoice. Invoicing posts the amount to the customer's statement." />
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <Segmented
           value={filter}
@@ -63,6 +107,12 @@ export function OrdersPage() {
                       <div className="truncate text-xs text-muted">
                         <span className="font-medium text-ink">{o.account.name}</span> · {o.poNumber ?? "no PO"} · <Ch className="inline h-3 w-3" aria-label={o.channel} /> {o.placedBy}, {relative(o.placedAt)}
                       </div>
+                      {o.tracking && (
+                        <div className="flex items-center gap-1 text-[11px] text-muted">
+                          <Truck className="h-3 w-3" /> {[o.tracking.carrier, o.tracking.number].filter(Boolean).join(" ")}
+                          {o.tracking.url && <a className="text-accent hover:underline" href={o.tracking.url} target="_blank" rel="noreferrer noopener" onClick={(e) => e.stopPropagation()}>track</a>}
+                        </div>
+                      )}
                     </div>
                   </button>
                   <span className="num w-28 text-right font-semibold">{money(o.totalMinor, o.currency)}</span>
@@ -70,7 +120,11 @@ export function OrdersPage() {
                     {o.next.map((s) => (
                       <button key={s} disabled={!!act.busy}
                         className={s === "CANCELLED" ? "btn-ghost px-3 py-1.5 text-xs text-danger" : "btn-primary px-3 py-1.5 text-xs"}
-                        onClick={() => void act.run(`${o.number}:${s}`, () => admin.setOrderStatus(o.number, s)).then((ok) => ok && (list.reload(), all.reload()))}>
+                        onClick={() =>
+                          s === "SHIPPED" || s === "PART_SHIPPED"
+                            ? setShipping({ order: o, status: s })
+                            : void act.run(`${o.number}:${s}`, () => admin.setOrderStatus(o.number, s)).then((ok) => ok && (list.reload(), all.reload()))
+                        }>
                         {act.busy === `${o.number}:${s}` ? "…" : actionLabel[s]}
                       </button>
                     ))}
@@ -96,6 +150,7 @@ export function OrdersPage() {
           })}
         </ul>
       </Panel>
+      {shipping && <ShipDialog order={shipping.order} status={shipping.status} onClose={() => setShipping(null)} onDone={() => (list.reload(), all.reload())} />}
     </div>
   );
 }

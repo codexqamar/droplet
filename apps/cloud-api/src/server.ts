@@ -10,6 +10,7 @@ import { portalRoutes } from "./routes/portal.js";
 import { adminRoutes } from "./routes/admin.js";
 import { notificationRoutes } from "./routes/notifications.js";
 import { opsRoutes } from "./routes/ops.js";
+import { integrationRoutes } from "./routes/integration.js";
 import { onboardingRoutes } from "./routes/onboarding.js";
 import { announceSetupIfNeeded } from "./onboarding.js";
 import fastifyStatic from "@fastify/static";
@@ -30,6 +31,7 @@ await app.register(onboardingRoutes);
 await app.register(adminRoutes);
 await app.register(notificationRoutes);
 await app.register(opsRoutes);
+await app.register(integrationRoutes);
 
 // Production-style single origin: serve the built portal (apps/web/dist) with SPA fallback.
 const webDist = config.webDistDir;

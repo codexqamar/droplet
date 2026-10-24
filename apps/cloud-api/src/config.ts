@@ -31,6 +31,20 @@ export const config = {
   /** Max installer upload size (bytes). */
   maxReleaseBytes: Number(process.env.MAX_RELEASE_BYTES ?? 300 * 1024 * 1024),
 
+  /** Outbound email. SMTP_URL e.g. smtps://user:pass@smtp.example.com:465 (Postmark, SES, Resend,
+   *  Mailgun, Microsoft 365 ...). Unset = emails are written to the server log. */
+  smtpUrl: process.env.SMTP_URL ?? "",
+  mailFrom: process.env.MAIL_FROM ?? "",
+
+  /** Online payments. Stripe Checkout (card + Bacs Direct Debit) when STRIPE_SECRET_KEY is set;
+   *  PAYMENTS_DEMO=1 enables a simulated checkout for demo installs (no money moves). */
+  stripeSecretKey: process.env.STRIPE_SECRET_KEY ?? "",
+  stripeWebhookSecret: process.env.STRIPE_WEBHOOK_SECRET ?? "",
+  stripeMethods: (process.env.STRIPE_PAYMENT_METHODS ?? "card").split(",").map((m) => m.trim()).filter(Boolean),
+  paymentsDemo: process.env.PAYMENTS_DEMO === "1" || process.env.DROPLET_DEMO === "1",
+  /** Demo installs: enables "Load demo data" in the admin portal and the simulated checkout. */
+  demoMode: process.env.DROPLET_DEMO === "1",
+
   nonceTtlSec: 60,
   attestationClockSkewSec: 120,
   syncTokenTtlSec: 10 * 60,

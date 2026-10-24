@@ -111,17 +111,21 @@ function TermsFields({ value, onChange, tiers, reps }: { value: TermsForm; onCha
       <Field label="Payment terms (days)">
         <input className={`${inputCls} num`} inputMode="numeric" value={value.terms} onChange={(e) => onChange({ ...value, terms: e.target.value.replace(/\D/g, "") })} />
       </Field>
+      <label className="flex items-center gap-2 text-sm sm:col-span-2">
+        <input type="checkbox" checked={value.poRequired} onChange={(e) => onChange({ ...value, poRequired: e.target.checked })} />
+        Require a purchase order number on every order
+      </label>
     </div>
   );
 }
 
-type TermsForm = { priceTierId: string; repId: string; creditLimit: string; terms: string };
+type TermsForm = { priceTierId: string; repId: string; creditLimit: string; terms: string; poRequired: boolean };
 const toTerms = (f: TermsForm): Terms | null => {
   const credit = parseMoney(f.creditLimit);
   if (credit === null) return null;
-  return { priceTierId: f.priceTierId || null, repId: f.repId || null, creditLimitMinor: credit, paymentTermsDays: Number(f.terms || 0) };
+  return { priceTierId: f.priceTierId || null, repId: f.repId || null, creditLimitMinor: credit, paymentTermsDays: Number(f.terms || 0), poRequired: f.poRequired };
 };
-const formFrom = (a: AccountRow): TermsForm => ({ priceTierId: a.priceTierId ?? "", repId: a.rep?.id ?? "", creditLimit: toMoneyInput(a.creditLimitMinor), terms: String(a.paymentTermsDays) });
+const formFrom = (a: AccountRow): TermsForm => ({ priceTierId: a.priceTierId ?? "", repId: a.rep?.id ?? "", creditLimit: toMoneyInput(a.creditLimitMinor), terms: String(a.paymentTermsDays), poRequired: a.poRequired });
 
 function useRefs() {
   const tiers = useLoad(() => admin.products().then((p) => p.tiers), []);
@@ -235,9 +239,32 @@ function AccountDrawer({ id, isAdmin, onClose, onChanged }: { id: string; isAdmi
                 {d.users.map((u) => (
                   <li key={u.id} className="flex flex-wrap items-center gap-3 py-2.5 text-sm">
                     <div className="min-w-0 flex-1">
-                      <div className="font-medium">{u.name} {u.owner && <span className="text-[11px] text-accent">· owner</span>}</div>
-                      <div className="text-xs text-muted">{u.email} · {u.lastLoginAt ? `last signed in ${relative(u.lastLoginAt)}` : "never signed in"}</div>
+                      <div className="font-medium">
+                        {u.name} {u.owner ? <span className="text-[11px] text-accent">· owner</span> : u.canApprove ? <span className="text-[11px] text-ok">· approver</span> : null}
+                      </div>
+                      <div className="text-xs text-muted">
+                        {u.email} · {u.lastLoginAt ? `last signed in ${relative(u.lastLoginAt)}` : "never signed in"}
+                        {!u.canApprove && u.spendLimitMinor !== null && ` · limit ${money(u.spendLimitMinor, a.currency)} per order`}
+                      </div>
                     </div>
+                    {!u.owner && (
+                      <button className="btn-ghost px-3 py-1.5 text-xs" disabled={!!act.busy} title="Let this buyer approve colleagues' orders"
+                        onClick={() => void act.run(`appr:${u.id}`, () => admin.setBuyerControls(u.id, { canApprove: !u.canApprove })).then((ok) => ok && refresh())}>
+                        {u.canApprove ? "Remove approver" : "Make approver"}
+                      </button>
+                    )}
+                    {!u.owner && !u.canApprove && (
+                      <button className="btn-ghost px-3 py-1.5 text-xs" disabled={!!act.busy} title="Orders above this need an approver on their account"
+                        onClick={() => {
+                          const v = window.prompt(`Spending limit per order for ${u.name} (${a.currency}). Leave blank for no limit.`, u.spendLimitMinor === null ? "" : toMoneyInput(u.spendLimitMinor));
+                          if (v === null) return;
+                          const minor = v.trim() ? parseMoney(v) : null;
+                          if (v.trim() && minor === null) return act.setError("Enter a valid amount.");
+                          void act.run(`lim:${u.id}`, () => admin.setBuyerControls(u.id, { spendLimitMinor: minor })).then((ok) => ok && refresh());
+                        }}>
+                        Spend limit
+                      </button>
+                    )}
                     {!u.active && <Badge label="Deactivated" tone="danger" />}
                     {isAdmin && (
                       <>
@@ -309,6 +336,20 @@ function AccountDrawer({ id, isAdmin, onClose, onChanged }: { id: string; isAdmi
 
           {tab === "statement" && (
             <div className="space-y-3">
+              {d.payments.length > 0 && (
+                <div className="glass-inset p-3">
+                  <div className="mb-1 text-xs font-semibold">Online payments</div>
+                  <ul className="divide-y divide-line/50 text-xs dark:divide-line/[0.07]">
+                    {d.payments.map((p) => (
+                      <li key={p.id} className="flex items-center gap-3 py-1.5">
+                        <span className="min-w-0 flex-1 truncate">{p.reference} · {p.method === "bacs_debit" ? "Direct Debit" : p.method === "card" ? "Card" : p.provider} · {shortDate(p.at)}</span>
+                        <Badge label={p.status === "SUCCEEDED" ? "Paid" : p.status.toLowerCase()} tone={p.status === "SUCCEEDED" ? "ok" : p.status === "PENDING" ? "warn" : "muted"} />
+                        <span className="num font-semibold">{money(p.amountMinor, a.currency)}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
               <ul className="max-h-72 divide-y divide-line/60 overflow-y-auto dark:divide-line/[0.07]">
                 {d.ledger.length === 0 && <li className="py-4 text-sm text-muted">No statement entries yet.</li>}
                 {d.ledger.map((l) => (
@@ -371,7 +412,7 @@ function CreateAccount({ onClose, onCreated }: { onClose: () => void; onCreated:
   const [ownerName, setOwnerName] = useState("");
   const [ownerEmail, setOwnerEmail] = useState("");
   const [phone, setPhone] = useState("");
-  const [terms, setTerms] = useState<TermsForm>({ priceTierId: "", repId: "", creditLimit: "0.00", terms: "30" });
+  const [terms, setTerms] = useState<TermsForm>({ priceTierId: "", repId: "", creditLimit: "0.00", terms: "30", poRequired: false });
   const [result, setResult] = useState<{ code: string; inviteUrl: string } | null>(null);
 
   return (

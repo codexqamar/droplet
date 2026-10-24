@@ -1,5 +1,5 @@
 import QRCode from "qrcode";
-import { Boxes, Building2, FileText, LayoutGrid, LogOut, PackageCheck, Settings, ShieldCheck, Users, type LucideIcon } from "lucide-react";
+import { Boxes, Building2, FileText, LayoutGrid, LogOut, PackageCheck, Plug, Settings, ShieldCheck, Users, type LucideIcon } from "lucide-react";
 import { useEffect, useState, type FormEvent } from "react";
 import { Logo, ThemeToggle } from "../components/TopBar";
 import { ApiError, auth } from "../lib/api";
@@ -10,10 +10,11 @@ import { AccountsPage } from "./AccountsPage";
 import { CataloguePage } from "./CataloguePage";
 import { OrdersPage, QuotesPage } from "./OrdersQuotes";
 import { OverviewPage, SecurityPage, SettingsPage, TeamPage } from "./SystemPages";
+import { IntegrationsPage } from "./IntegrationsPage";
 import { ErrorText, useLoad } from "./ui";
 import { NoticeToasts, NotificationBell, useNotifications } from "./Notifications";
 
-type Page = "overview" | "accounts" | "orders" | "quotes" | "catalogue" | "team" | "security" | "settings";
+type Page = "overview" | "accounts" | "orders" | "quotes" | "catalogue" | "team" | "integrations" | "security" | "settings";
 
 const items: Array<{ id: Page; label: string; icon: LucideIcon; adminOnly?: boolean }> = [
   { id: "overview", label: "Overview", icon: LayoutGrid },
@@ -22,6 +23,7 @@ const items: Array<{ id: Page; label: string; icon: LucideIcon; adminOnly?: bool
   { id: "quotes", label: "Quotes", icon: FileText },
   { id: "catalogue", label: "Catalogue", icon: Boxes },
   { id: "team", label: "Team", icon: Users, adminOnly: true },
+  { id: "integrations", label: "Integrations", icon: Plug, adminOnly: true },
   { id: "security", label: "Security", icon: ShieldCheck, adminOnly: true },
   { id: "settings", label: "Settings", icon: Settings, adminOnly: true },
 ];
@@ -104,6 +106,7 @@ function AdminShell({ path, theme, onToggleTheme, onSignOut }: { path: string; t
         {page === "quotes" && <QuotesPage />}
         {page === "catalogue" && <CataloguePage isAdmin={isAdmin} currency={data.currency} />}
         {page === "team" && isAdmin && <TeamPage myId={data.me.id} />}
+        {page === "integrations" && isAdmin && <IntegrationsPage />}
         {page === "security" && isAdmin && <SecurityPage />}
         {page === "settings" && isAdmin && <SettingsPage onSaved={() => void ov.reload()} />}
       </main>

@@ -1,4 +1,4 @@
-import { Building2, FileClock, KeyRound, PackageCheck, ShieldAlert, UserPlus } from "lucide-react";
+import { Building2, FileClock, FlaskConical, KeyRound, PackageCheck, ShieldAlert, UserPlus } from "lucide-react";
 import { useState } from "react";
 import { StatCard } from "../components/StatCard";
 import { admin, type Overview } from "../lib/admin";
@@ -173,6 +173,15 @@ export function SecurityPage() {
   return (
     <div className="space-y-5">
       <PageHeading title="Security" description="Desktop installs and their integrity checks, tamper incidents, signed releases and the full audit log." />
+      {d?.mfaKeyFingerprint && (
+        <div className="glass flex flex-col gap-1 px-4 py-3 text-xs sm:flex-row sm:items-center sm:gap-3">
+          <KeyRound className="h-4 w-4 shrink-0 text-accent" />
+          <span className="flex-1 text-muted">
+            Two-step key fingerprint <code className="select-all font-mono text-ink">{d.mfaKeyFingerprint}</code>. Your backed-up <code className="font-mono">DROPLET_MFA_ENC_KEY</code> must produce the same fingerprint
+            (<code className="font-mono">sha256</code>, first 16 characters); if the key is lost, every user has to set up their authenticator again.
+          </span>
+        </div>
+      )}
       <Segmented value={tab} onChange={setTab} options={[
         { value: "devices", label: "Desktop installs" },
         { value: "incidents", label: "Incidents", count: d?.incidents.filter((i) => !i.resolvedAt).length },
@@ -238,6 +247,38 @@ export function SecurityPage() {
   );
 }
 
+function DemoData({ loaded, onLoaded }: { loaded: boolean; onLoaded: () => void }) {
+  const act = useAction();
+  const [r, setR] = useState<Awaited<ReturnType<typeof admin.loadDemoData>> | null>(null);
+  return (
+    <Panel title="Demo data" action={<FlaskConical className="h-4 w-4 text-muted" />}>
+      <p className="text-sm text-muted">This is a demo install. Load a sample plumbing &amp; heating catalogue across three branches, with trade accounts, contract prices, order history, saved lists and statements. Nothing existing is changed.</p>
+      {!loaded && !r && (
+        <button className="btn-primary mt-3" disabled={!!act.busy} onClick={() => void act.run("demo", async () => {
+          setR(await admin.loadDemoData());
+          onLoaded();
+        })}>
+          {act.busy ? "Loading…" : "Load demo data"}
+        </button>
+      )}
+      {loaded && !r && <p className="mt-3 text-sm text-ok">Demo data is loaded.</p>}
+      <ErrorText error={act.error} />
+      {r?.loaded && (
+        <div className="mt-3 space-y-2 text-sm">
+          <p className="font-medium text-ok">{r.message}</p>
+          <p className="text-xs text-muted">Buyer sign-ins (copy the password now; it is not shown again):</p>
+          <CopyLink url={r.password ?? ""} note="Password for every demo buyer" />
+          <ul className="divide-y divide-line/60 text-xs dark:divide-line/[0.07]">
+            {r.logins?.map((l) => (
+              <li key={l.email} className="py-1.5"><span className="font-mono text-ink">{l.email}</span> <span className="text-muted">· {l.note}</span></li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </Panel>
+  );
+}
+
 export function SettingsPage({ onSaved }: { onSaved: () => void }) {
   const s = useLoad(() => admin.settings(), []);
   const act = useAction();
@@ -260,6 +301,7 @@ export function SettingsPage({ onSaved }: { onSaved: () => void }) {
           </form>
         )}
       </Panel>
+      {s.data?.demoMode && <DemoData loaded={s.data.demoLoaded} onLoaded={() => (s.reload(), onSaved())} />}
       <Panel title="How onboarding works">
         <ol className="list-decimal space-y-1.5 pl-5 text-sm text-muted">
           <li>Customers apply from the portal's <span className="font-medium text-ink">Apply for an account</span> page, or you open an account for them in <span className="font-medium text-ink">Trade accounts</span>.</li>

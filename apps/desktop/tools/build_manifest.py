@@ -15,6 +15,7 @@ cloud release registry (buildId, manifestRoot, manifestSig).
 from __future__ import annotations
 
 import argparse
+import os
 import base64
 import hashlib
 import json
@@ -66,7 +67,9 @@ def main() -> None:
     mf.add_argument("--build-id", required=True)
     mf.add_argument("--version", required=True)
     mf.add_argument("--platform", required=True)
-    mf.add_argument("--signing-key-file", type=Path, required=True, help="raw 32-byte Ed25519 seed, base64")
+    key_src = mf.add_mutually_exclusive_group(required=True)
+    key_src.add_argument("--signing-key-file", type=Path, help="raw 32-byte Ed25519 seed, base64")
+    key_src.add_argument("--signing-key-env", help="environment variable holding the base64 seed (CI secret store / KMS fetch); never written to disk")
     args = ap.parse_args()
 
     if args.cmd == "stamp":
@@ -78,7 +81,13 @@ def main() -> None:
         args.src.write_text(text.replace(PLACEHOLDER, args.pubkey), "utf-8")
         return
 
-    key = Ed25519PrivateKey.from_private_bytes(base64.b64decode(args.signing_key_file.read_text().strip()))
+    if args.signing_key_env:
+        seed = os.environ.get(args.signing_key_env, "").strip()
+        if not seed:
+            raise SystemExit(f"{args.signing_key_env} is not set")
+    else:
+        seed = args.signing_key_file.read_text().strip()
+    key = Ed25519PrivateKey.from_private_bytes(base64.b64decode(seed))
     manifest = build_manifest(args.bundle, args.build_id, args.version, args.platform)
     print(json.dumps(sign_manifest(args.bundle, manifest, key)))
 
